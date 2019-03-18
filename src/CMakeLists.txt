@@ -1,2 +1,5 @@
-add_executable(stl_sort stl_sort.cpp sort.cpp)
-add_executable(partition partition.cpp)
+add_executable(
+    partitioning_benchmark
+    partitioning_benchmark.cpp
+    radix_partition.cpp
+    )

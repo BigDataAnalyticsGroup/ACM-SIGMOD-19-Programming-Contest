@@ -50,7 +50,7 @@ int main(int argc, char **argv)
     /* Partition the data. */
     for (auto p = data, end = data + count; p != end; ++p) {
         /* Extract 10 most significant bits from key. */
-        const uint16_t bits = (p->key[0] << 2) | (p->key[1] >> 6);
+        const auto bits = p->get_radix_bits();
         /* Write record to its partition. */
         partitions[bits].file.write(reinterpret_cast<char*>(p), sizeof(*p));
     }

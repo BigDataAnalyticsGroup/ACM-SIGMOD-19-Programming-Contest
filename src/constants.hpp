@@ -1,4 +1,4 @@
-//===== record.hpp =====================================================================================================
+//===== constants.hpp ==================================================================================================
 //
 //  Author: Immanuel Haffner <haffner.immanuel@gmail.com>
 //
@@ -18,27 +18,12 @@
 //      limitations under the License.
 //
 //  Description:
-//      This file provides simple access to records.
+//      This file defines project specific constants.
 //
 //======================================================================================================================
 
 #pragma once
 
-#include <cstdint>
-#include <cstring>
 
-
-struct __attribute__((packed)) record
-{
-    uint8_t key[10];
-    uint8_t payload[90];
-
-    /** Extracts the 10 most significant bits from the key and places them in the 10 lowest bits of the result.  All
-     * other bits are set to 0. */
-    uint16_t get_radix_bits() const { return (key[0] << 2) | (key[1] >> 6); }
-
-    bool operator<(const record &other) const { return memcmp(this->key, other.key, 10) < 0; }
-    bool operator==(const record &other) const { return memcmp(this->key, other.key, 10) == 0; }
-    bool operator!=(const record &other) const { return not operator==(other); }
-};
-static_assert(sizeof(record) == 100, "incorrect record size");
+constexpr unsigned NUM_RADIX_BITS = 10;
+constexpr unsigned NUM_PARTITIONS = 1 << NUM_RADIX_BITS;
