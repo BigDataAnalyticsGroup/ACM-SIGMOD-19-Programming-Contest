@@ -27,9 +27,8 @@ int main(int argc, const char **argv)
 
         std::cerr << duration_cast<milliseconds>(t_end - t_begin).count() / 1e3 << " s" << std::endl;
     }
-    std::exit(1);
 
-    std::this_thread::sleep_for(5s);
+    std::this_thread::sleep_for(2s);
 
     {
         std::cout << "stl_sort_mmap: ";
