@@ -25,13 +25,65 @@
 
 #include "sort.hpp"
 
+#include "constants.hpp"
 #include "mmap.hpp"
 #include "record.hpp"
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <vector>
 
+
+void example_sort(const char *infile, const char *outfile)
+{
+    constexpr int kTupleSize = 100;
+    constexpr int kKeySize = 10;
+    using tuple_t = std::array<unsigned char, kTupleSize>;
+
+    auto less = [](const tuple_t &lhs, const tuple_t &rhs) {
+        for (int i = 0; i < kKeySize; ++i) {
+            if (lhs[i] == rhs[i])
+                continue;
+            return lhs[i] < rhs[i];
+        }
+        return false;
+    };
+
+    std::ifstream is(infile);
+    if (!is) {
+        std::cerr << "Could not open the file\n";
+        std::exit(-1);
+    }
+
+    // get size of file
+    is.seekg(0, is.end);
+    const std::int64_t size = is.tellg();
+    is.seekg(0);
+
+    // allocate memory for file content
+    const std::int64_t num_tuples = size / kTupleSize;
+    std::vector<tuple_t> buffer(num_tuples);
+
+    std::ofstream os(outfile);
+
+    // read content of is
+    for (std::int64_t i = 0; i < num_tuples; ++i)
+        is.read(reinterpret_cast<char*>(buffer[i].data()), kTupleSize);
+
+    std::stable_sort(buffer.begin(), buffer.end(), less);
+
+    for (std::int64_t i = 0; i < num_tuples; ++i)
+        os.write(reinterpret_cast<char*>(buffer[i].data()), kTupleSize);
+
+    assert(std::is_sorted(buffer.begin(), buffer.end(), less));
+
+    os.flush();
+    is.close();
+    os.close();
+}
 
 void stl_sort_mmap(const char *in, const char *out)
 {

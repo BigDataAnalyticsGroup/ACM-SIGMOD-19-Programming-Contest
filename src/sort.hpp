@@ -26,4 +26,7 @@
 #pragma once
 
 
+/** Sorting algorithm from the provided example. */
+void example_sort(const char *infile, const char *outfile);
+
 void stl_sort_mmap(const char *in, const char *out);
