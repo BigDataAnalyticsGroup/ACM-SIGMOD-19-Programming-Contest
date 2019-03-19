@@ -36,8 +36,8 @@
 
 struct MMapFile
 {
-    MMapFile(const char *filename) : filename(filename) {
-        fd_ = open(filename, O_RDONLY);
+    MMapFile(const char *filename, int flags = O_RDONLY, bool populate = false) : filename(filename) {
+        fd_ = open(filename, flags);
         if (fd_ == -1)
             throw std::runtime_error("failed to open file");
 
@@ -46,7 +46,10 @@ struct MMapFile
             throw std::runtime_error("failed to stat file");
         size_ = statbuf.st_size;
 
-        addr_ = mmap(nullptr, size_, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd_, 0);
+        if (populate)
+            addr_ = mmap(nullptr, size_, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_POPULATE, fd_, 0);
+        else
+            addr_ = mmap(nullptr, size_, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd_, 0);
         if (addr_ == MAP_FAILED)
             throw std::runtime_error("failed to mmap file");
     }

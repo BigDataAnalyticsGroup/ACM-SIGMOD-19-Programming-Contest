@@ -87,7 +87,7 @@ void example_sort(const char *infile, const char *outfile)
 
 void stl_sort_mmap(const char *in, const char *out)
 {
-    MMapFile infile(in);
+    MMapFile infile(in, O_RDONLY, true);
 
     /* Access the data as array of struct. */
     auto data = reinterpret_cast<record*>(infile.addr());
