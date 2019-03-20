@@ -62,10 +62,11 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
-    BENCHMARK(hist_direct); // too slow
+    //BENCHMARK(hist_direct); // too slow
     BENCHMARK(hist_file);
-    BENCHMARK(hist_file_seek); // too slow
+    //BENCHMARK(hist_file_seek); // too slow
     BENCHMARK(hist_file_custom_buffer);
     BENCHMARK(hist_mmap);
-    BENCHMARK(hist_mmap_prefault);
+    //BENCHMARK(hist_mmap_prefault); // too slow
+    BENCHMARK(hist_mmap_MT);
 }

@@ -40,3 +40,5 @@ histogram_t hist_file_custom_buffer(const char *infile);
 histogram_t hist_mmap(const char *infile);
 
 histogram_t hist_mmap_prefault(const char *infile);
+
+histogram_t hist_mmap_MT(const char *infile);

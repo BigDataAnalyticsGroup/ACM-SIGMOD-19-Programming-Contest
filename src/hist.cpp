@@ -26,11 +26,14 @@
 
 #include "mmap.hpp"
 #include "record.hpp"
+#include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <err.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <thread>
 #include <unistd.h>
 
 
@@ -52,7 +55,7 @@ histogram_t hist_direct(const char *infile)
 
     /* Compute the histogram. */
     char buffer[sizeof(record)];
-    std::array<unsigned, 1024> histogram{ 0 };
+    histogram_t histogram{ 0 };
     for (unsigned i = 0; i != num_records; ++i) {
         read(fildes, buffer, sizeof buffer);
         const uint32_t pid = (uint32_t(buffer[0]) << 2) | (uint32_t(buffer[1]) >> 6);
@@ -81,7 +84,7 @@ histogram_t hist_file(const char *infile)
     const unsigned num_records = size_in_bytes / sizeof(record);
 
     /* Compute the histogram. */
-    std::array<unsigned, 1024> histogram{ 0 };
+    histogram_t histogram{ 0 };
     for (unsigned i = 0; i != num_records; ++i) {
         const uint32_t k0 = getc_unlocked(in);
         const uint32_t k1 = getc_unlocked(in);
@@ -114,7 +117,7 @@ histogram_t hist_file_seek(const char *infile)
     const unsigned num_records = size_in_bytes / sizeof(record);
 
     /* Compute the histogram. */
-    std::array<unsigned, 1024> histogram{ 0 };
+    histogram_t histogram{ 0 };
     for (unsigned i = 0; i != num_records; ++i) {
         const uint32_t k0 = getc_unlocked(in);
         const uint32_t k1 = getc_unlocked(in);
@@ -153,7 +156,7 @@ histogram_t hist_file_custom_buffer(const char *infile)
     setvbuf(in, buf, /* mode = */ _IOFBF, BUFFER_SIZE);
 
     /* Compute the histogram. */
-    std::array<unsigned, 1024> histogram{ 0 };
+    histogram_t histogram{ 0 };
     for (unsigned i = 0; i != num_records; ++i) {
         const uint32_t k0 = getc_unlocked(in);
         const uint32_t k1 = getc_unlocked(in);
@@ -180,7 +183,7 @@ histogram_t hist_mmap(const char *infile)
     const std::size_t num_records = in.size() / sizeof(*data);
 
     /* Compute the histogram. */
-    std::array<unsigned, 1024> histogram{ 0 };
+    histogram_t histogram{ 0 };
     for (auto p = data, end = data + num_records; p != end; ++p)
         ++histogram[p->get_radix_bits()];
 
@@ -197,9 +200,54 @@ histogram_t hist_mmap_prefault(const char *infile)
     const std::size_t num_records = in.size() / sizeof(*data);
 
     /* Compute the histogram. */
-    std::array<unsigned, 1024> histogram{ 0 };
+    histogram_t histogram{ 0 };
     for (auto p = data, end = data + num_records; p != end; ++p)
         ++histogram[p->get_radix_bits()];
 
     return histogram;
+}
+
+histogram_t hist_mmap_MT(const char *infile)
+{
+    /* Lambda to compute the histogram of a range. */
+    auto compute_hist = [](histogram_t *histogram, const record *begin, const record *end) {
+        for (auto p = begin; p != end; ++p)
+            ++(*histogram)[p->get_radix_bits()];
+    };
+
+    /* Open the input file. */
+    MMapFile in(infile);
+
+    /* Access the data as array of struct. */
+    auto data = reinterpret_cast<record*>(in.addr());
+    const std::size_t num_records = in.size() / sizeof(*data);
+
+    /* Divide the input into chunks and allocate a histogram per chunk. */
+    constexpr unsigned NUM_THREADS = 6;
+    histogram_t local_hists[NUM_THREADS] = { { 0 } };
+    std::thread threads[NUM_THREADS];
+
+    /* Spawn a thread per chunk to compute the local histogram. */
+    std::size_t begin = 0;
+    std::size_t end;
+    const std::size_t step_size = num_records / NUM_THREADS;
+    for (unsigned i = 0; i != NUM_THREADS - 1; ++i) {
+        end = begin + step_size;
+        assert(begin >= 0);
+        assert(end <= num_records);
+        assert(begin < end);
+        new (&threads[i]) std::thread(compute_hist, &local_hists[i], data + begin, data + end);
+        begin = end;
+    }
+    new (&threads[NUM_THREADS - 1]) std::thread(compute_hist, &local_hists[NUM_THREADS - 1], data + begin, data + num_records);
+
+    /* Summarize the local histograms in a global histogram. */
+    histogram_t the_histogram{ 0 };
+    for (unsigned tid = 0; tid != NUM_THREADS; ++tid) {
+        threads[tid].join();
+        for (std::size_t i = 0; i != 1024; ++i)
+            the_histogram[i] += local_hists[tid][i];
+    }
+
+    return the_histogram;
 }

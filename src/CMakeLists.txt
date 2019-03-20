@@ -4,6 +4,7 @@ add_executable(
     histogram_benchmark.cpp
     hist.cpp
     )
+target_link_libraries(histogram_benchmark ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(
     partitioning_benchmark
