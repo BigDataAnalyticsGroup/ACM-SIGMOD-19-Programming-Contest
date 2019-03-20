@@ -1,5 +1,11 @@
 # Benchmark executables
 add_executable(
+    histogram_benchmark
+    histogram_benchmark.cpp
+    hist.cpp
+    )
+
+add_executable(
     partitioning_benchmark
     partitioning_benchmark.cpp
     radix_partition.cpp

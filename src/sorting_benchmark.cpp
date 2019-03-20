@@ -1,3 +1,4 @@
+#include "benchmark.hpp"
 #include "sort.hpp"
 #include <chrono>
 #include <cstddef>
@@ -7,17 +8,8 @@
 
 
 #define BENCHMARK(ALGO) \
-{ \
-    std::cout << #ALGO ": "; \
-    std::cout.flush(); \
-\
-    const auto t_begin = high_resolution_clock::now(); \
-    ALGO(argv[1], argv[2]); \
-    const auto t_end = high_resolution_clock::now(); \
-\
-    std::cerr << duration_cast<milliseconds>(t_end - t_begin).count() / 1e3 << " s" << std::endl; \
-    std::this_thread::sleep_for(2s); \
-}
+    benchmark(#ALGO, [=]() { ALGO(argv[1], argv[2]); }); \
+    std::this_thread::sleep_for(2s)
 
 
 using namespace std::chrono;

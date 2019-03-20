@@ -1,9 +1,15 @@
+#include "benchmark.hpp"
 #include "radix_partition.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+
+
+#define BENCHMARK(ALGO) \
+    benchmark(#ALGO, [=]() { ALGO(argv[1], argv[2]); }); \
+    std::this_thread::sleep_for(2s)
 
 
 using namespace std::chrono;
@@ -19,27 +25,6 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
-    {
-        std::cout << "example partitioning: ";
-        std::cout.flush();
-
-        const auto t_begin = high_resolution_clock::now();
-        example_partition(argv[1], argv[2]);
-        const auto t_end = high_resolution_clock::now();
-
-        std::cerr << duration_cast<milliseconds>(t_end - t_begin).count() / 1e3 << " s" << std::endl;
-    }
-
-    std::this_thread::sleep_for(2s);
-
-    {
-        std::cout << "partition_hist_mmap: ";
-        std::cout.flush();
-
-        const auto t_begin = high_resolution_clock::now();
-        partition_hist_mmap(argv[1], argv[2]);
-        const auto t_end = high_resolution_clock::now();
-
-        std::cerr << duration_cast<milliseconds>(t_end - t_begin).count() / 1e3 << " s" << std::endl;
-    }
+    BENCHMARK(example_partition);
+    BENCHMARK(partition_hist_mmap);
 }

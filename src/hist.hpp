@@ -1,4 +1,4 @@
-//===== constants.hpp ==================================================================================================
+//===== hist.hpp =======================================================================================================
 //
 //  Author: Immanuel Haffner <haffner.immanuel@gmail.com>
 //
@@ -18,16 +18,25 @@
 //      limitations under the License.
 //
 //  Description:
-//      This file defines project specific constants and types.
+//      This file provides algorithms for histrogram generation.
 //
 //======================================================================================================================
 
 #pragma once
 
-#include <array>
+#include "constants.hpp"
+#include <cstdio>
+#include <fstream>
 
 
-constexpr unsigned NUM_RADIX_BITS = 10;
-constexpr unsigned NUM_PARTITIONS = 1 << NUM_RADIX_BITS;
+histogram_t hist_direct(const char *infile);
 
-using histogram_t = std::array<unsigned, NUM_PARTITIONS>;
+histogram_t hist_file(const char *infile);
+
+histogram_t hist_file_seek(const char *infile);
+
+histogram_t hist_file_custom_buffer(const char *infile);
+
+histogram_t hist_mmap(const char *infile);
+
+histogram_t hist_mmap_prefault(const char *infile);

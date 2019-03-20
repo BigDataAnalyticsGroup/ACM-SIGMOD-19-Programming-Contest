@@ -23,6 +23,8 @@
 //
 //======================================================================================================================
 
+#include "radix_partition.hpp"
+
 #include "constants.hpp"
 #include "record.hpp"
 #include <array>
@@ -140,6 +142,8 @@ void partition_hist_mmap(const char *infile, const char *outfile)
         const uint32_t k0 = getc_unlocked(in);
         const uint32_t k1 = getc_unlocked(in);
         const uint32_t pid = (k0 << 2) | (k1 >> 6);
+        for (unsigned i = 2; i != sizeof(record); ++i)
+            getc_unlocked(in);
         assert(pid < 1024);
         ++histogram[pid];
     }
