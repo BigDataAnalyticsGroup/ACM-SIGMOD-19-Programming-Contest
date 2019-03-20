@@ -12,6 +12,8 @@ using namespace std::chrono_literals;
 
 int main(int argc, const char **argv)
 {
+    std::ios::sync_with_stdio(false);
+
     if (argc != 3) {
         std::cerr << "USAGE:\n\t" << argv[0] << " <INPUT-FILE> <OUTPUT-FILE>" << std::endl;
         std::exit(EXIT_FAILURE);
@@ -28,7 +30,7 @@ int main(int argc, const char **argv)
         std::cerr << duration_cast<milliseconds>(t_end - t_begin).count() / 1e3 << " s" << std::endl;
     }
 
-    std::this_thread::sleep_for(5s);
+    std::this_thread::sleep_for(2s);
 
     {
         std::cout << "partition_hist_mmap: ";

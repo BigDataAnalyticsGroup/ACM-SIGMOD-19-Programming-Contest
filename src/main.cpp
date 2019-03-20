@@ -43,6 +43,8 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
+    std::ios::sync_with_stdio(false);
+
     METHOD(argv[1], argv[2]);
 
     std::exit(EXIT_SUCCESS);
