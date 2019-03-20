@@ -18,7 +18,7 @@ add_executable(
     radix_partition.cpp
     sort.cpp
     )
-target_compile_definitions(sort PRIVATE METHOD=stl_sort_mmap_stream)
+target_compile_definitions(sort PRIVATE METHOD=stl_sort_mmap_direct)
 
 add_executable(
     radix
