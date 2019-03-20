@@ -33,7 +33,9 @@
 #include "sort.hpp"
 #include <cstddef>
 #include <cstdlib>
+#include <err.h>
 #include <iostream>
+#include <sys/mman.h>
 
 
 int main(int argc, const char **argv)
@@ -43,9 +45,20 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
+    /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
 
+    /* Try to lock all current and future pages in physical RAM. */
+    int mlock_status = mlockall(MCL_CURRENT | MCL_FUTURE);
+    if (mlock_status)
+        warn("Unable to lock all current and future pages into physical RAM");
+
     METHOD(argv[1], argv[2]);
+
+    if (mlock_status == 0) {
+        if (munlockall())
+            warn("Unable to unlock all pages");
+    }
 
     std::exit(EXIT_SUCCESS);
 }
