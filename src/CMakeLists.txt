@@ -1,3 +1,4 @@
+# Benchmark executables
 add_executable(
     partitioning_benchmark
     partitioning_benchmark.cpp
@@ -9,3 +10,20 @@ add_executable(
     sorting_benchmark.cpp
     sort.cpp
     )
+
+# Submission executables
+add_executable(
+    sort
+    main.cpp
+    radix_partition.cpp
+    sort.cpp
+    )
+target_compile_definitions(sort PRIVATE METHOD=stl_sort_mmap)
+
+add_executable(
+    radix
+    main.cpp
+    radix_partition.cpp
+    sort.cpp
+    )
+target_compile_definitions(radix PRIVATE METHOD=partition_hist_mmap)
