@@ -304,7 +304,7 @@ histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
     const std::size_t num_records = in.size() / sizeof(*data);
 
     /* Divide the input into chunks and allocate a histogram per chunk. */
-    histogram_t *local_hists = new histogram_t[num_threads]{ {0} };
+    histogram_t *local_hists = new histogram_t[num_threads]{ {{0}} };
     std::thread *threads = new std::thread[num_threads];
 
     /* Spawn a thread per chunk to compute the local histogram. */
