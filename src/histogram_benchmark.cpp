@@ -35,8 +35,8 @@
 histogram_t the_histogram;
 
 #define BENCHMARK(ALGO) \
-    benchmark<3>(#ALGO, [&]() { the_histogram = ALGO(argv[1]); }); \
-    std::cout << "checksum: " << std::hex << checksum(the_histogram) << std::dec << '\n'; \
+    benchmark<1>(#ALGO, [&]() { the_histogram = ALGO(argv[1]); }); \
+    std::cout << "checksum: " << std::hex << checksum(the_histogram) << std::dec << std::endl; \
     std::this_thread::sleep_for(2s)
 
 #define hist_mmap_MT2(...) hist_mmap_MT(__VA_ARGS__, 2)
@@ -53,6 +53,14 @@ histogram_t the_histogram;
 using namespace std::chrono;
 using namespace std::chrono_literals;
 
+
+void dump_histogram(const histogram_t &histogram)
+{
+    for (unsigned i = 0; i != histogram.size(); ++i) {
+        if (histogram[i])
+            std::cerr << "Histogram[" << i << "]: " << histogram[i] << '\n';
+    }
+}
 
 uint32_t checksum(histogram_t &histogram)
 {
@@ -72,6 +80,7 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
+    BENCHMARK(example_hist);
     //BENCHMARK(hist_direct); // too slow
     //BENCHMARK(hist_file); // too slow
     //BENCHMARK(hist_file_seek); // too slow

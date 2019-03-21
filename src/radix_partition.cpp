@@ -51,7 +51,7 @@ void example_partition(const char *infile, const char *outfile)
     constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
     constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
 
-    auto getPartitionId = [](const char *key) {
+    auto getPartitionId = [](const unsigned char *key) {
         std::uint16_t pid = (*key) << kShift;
         pid += *(key + 1) & kLowMask;
         pid &= kMask;
@@ -73,14 +73,23 @@ void example_partition(const char *infile, const char *outfile)
 
     const std::uint16_t kNumPartitions = 1 << kNumPartitionBits;
     std::vector<int> histogram(kNumPartitions);
-    char buffer[kTupleSize];
+    unsigned char buffer[kTupleSize];
 
     // read content of is
     for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(buffer, kTupleSize);
+        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
         const std::uint16_t p = getPartitionId(buffer);
         ++histogram[p];
     }
+
+#ifndef NDEBUG
+    {
+        unsigned sum = 0;
+        for (auto n : histogram)
+            sum += n;
+        assert(sum == num_tuples);
+    }
+#endif
 
     std::vector<int> offset(kNumPartitions);
     int count = histogram[0];
@@ -88,13 +97,14 @@ void example_partition(const char *infile, const char *outfile)
         offset[p] = count;
         count += histogram[p];
     }
+    assert(count == num_tuples);
 
-    std::vector<char> output(size);
+    std::vector<unsigned char> output(size);
 
     // read content of is
     is.seekg(0);
     for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(buffer, kTupleSize);
+        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
         const std::uint16_t p = getPartitionId(buffer);
         const std::uint64_t dest = offset[p]++;
         std::memcpy(&output[dest * kTupleSize], buffer, kTupleSize);
@@ -102,7 +112,7 @@ void example_partition(const char *infile, const char *outfile)
     is.close();
 
     std::ofstream os(outfile);
-    os.write(output.data(), size);
+    os.write(reinterpret_cast<char*>(output.data()), size);
     os.close();
 }
 
@@ -114,7 +124,7 @@ void example_partition(const char *infile, const char *outfile, const histogram_
     constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
     constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
 
-    auto getPartitionId = [](const char *key) {
+    auto getPartitionId = [](const unsigned char *key) {
         std::uint16_t pid = (*key) << kShift;
         pid += *(key + 1) & kLowMask;
         pid &= kMask;
@@ -135,7 +145,16 @@ void example_partition(const char *infile, const char *outfile, const histogram_
     const std::int64_t num_tuples = size / kTupleSize;
 
     const std::uint16_t kNumPartitions = 1 << kNumPartitionBits;
-    char buffer[kTupleSize];
+    unsigned char buffer[kTupleSize];
+
+#ifndef NDEBUG
+    {
+        unsigned sum = 0;
+        for (auto n : histogram)
+            sum += n;
+        assert(sum == num_tuples);
+    }
+#endif
 
     std::vector<int> offset(kNumPartitions);
     int count = histogram[0];
@@ -143,13 +162,14 @@ void example_partition(const char *infile, const char *outfile, const histogram_
         offset[p] = count;
         count += histogram[p];
     }
+    assert(count == num_tuples);
 
-    std::vector<char> output(size);
+    std::vector<unsigned char> output(size);
 
     // read content of is
     is.seekg(0);
     for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(buffer, kTupleSize);
+        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
         const std::uint16_t p = getPartitionId(buffer);
         const std::uint64_t dest = offset[p]++;
         std::memcpy(&output[dest * kTupleSize], buffer, kTupleSize);
@@ -157,7 +177,7 @@ void example_partition(const char *infile, const char *outfile, const histogram_
     is.close();
 
     std::ofstream os(outfile);
-    os.write(output.data(), size);
+    os.write(reinterpret_cast<char*>(output.data()), size);
     os.close();
 }
 

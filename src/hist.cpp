@@ -39,6 +39,50 @@
 #include <sstream>
 
 
+histogram_t example_hist(const char *infile)
+{
+    constexpr int kTupleSize = 100;
+
+    auto getPartitionId = [](const unsigned char *key) {
+        return reinterpret_cast<const record*>(key)->get_radix_bits();
+    };
+
+    std::ifstream is(infile);
+    if (!is) {
+        std::cerr << "Could not open the file\n";
+        std::exit(-1);
+    }
+
+    // get size of file
+    is.seekg(0, is.end);
+    const std::int64_t size = is.tellg();
+    is.seekg(0);
+
+    const std::int64_t num_tuples = size / kTupleSize;
+
+    histogram_t histogram{ 0 };
+    unsigned char buffer[kTupleSize];
+
+    // read content of is
+    for (std::int64_t i = 0; i < num_tuples; ++i) {
+        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
+        const std::uint16_t p = getPartitionId(buffer);
+        ++histogram[p];
+    }
+
+#ifndef NDEBUG
+    {
+        unsigned sum = 0;
+        for (auto n : histogram)
+            sum += n;
+        assert(sum == num_tuples);
+    }
+#endif
+
+    is.close();
+    return histogram;
+}
+
 histogram_t hist_direct(const char *infile)
 {
     /* Open the input file. */
@@ -64,6 +108,13 @@ histogram_t hist_direct(const char *infile)
         assert(pid < 1024);
         ++histogram[pid];
     }
+
+#ifndef NDEBUG
+    unsigned sum = 0;
+    for (auto n : histogram)
+        sum += n;
+    assert(sum == num_records);
+#endif
 
     close(fildes);
     return histogram;
@@ -98,6 +149,13 @@ histogram_t hist_file(const char *infile)
     }
     assert(getc_unlocked(in) == EOF and "expected end-of-file");
 
+#ifndef NDEBUG
+    unsigned sum = 0;
+    for (auto n : histogram)
+        sum += n;
+    assert(sum == num_records);
+#endif
+
     fclose(in);
     return histogram;
 }
@@ -131,6 +189,13 @@ histogram_t hist_file_seek(const char *infile)
         fseek(in, 98, SEEK_CUR);
     }
     assert(getc_unlocked(in) == EOF and "expected end-of-file");
+
+#ifndef NDEBUG
+    unsigned sum = 0;
+    for (auto n : histogram)
+        sum += n;
+    assert(sum == num_records);
+#endif
 
     fclose(in);
     return histogram;
@@ -169,6 +234,13 @@ histogram_t hist_file_custom_buffer(const char *infile)
         ++histogram[pid];
     }
     assert(getc_unlocked(in) == EOF and "expected end-of-file");
+
+#ifndef NDEBUG
+    unsigned sum = 0;
+    for (auto n : histogram)
+        sum += n;
+    assert(sum == num_records);
+#endif
 
     std::fclose(in);
     std::free(buf);
