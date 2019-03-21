@@ -26,6 +26,7 @@
 
 #include "mmap.hpp"
 #include "record.hpp"
+#include "utility.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -207,7 +208,7 @@ histogram_t hist_mmap_prefault(const char *infile)
     return histogram;
 }
 
-histogram_t hist_mmap_MT(const char *infile)
+histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
 {
     /* Lambda to compute the histogram of a range. */
     auto compute_hist = [](histogram_t *histogram, const record *begin, const record *end) {
@@ -223,31 +224,33 @@ histogram_t hist_mmap_MT(const char *infile)
     const std::size_t num_records = in.size() / sizeof(*data);
 
     /* Divide the input into chunks and allocate a histogram per chunk. */
-    constexpr unsigned NUM_THREADS = 6;
-    histogram_t local_hists[NUM_THREADS] = { { 0 } };
-    std::thread threads[NUM_THREADS];
+    histogram_t *local_hists = allocate<histogram_t>(num_threads);
+    std::thread *threads = allocate<std::thread>(num_threads);
 
     /* Spawn a thread per chunk to compute the local histogram. */
     std::size_t begin = 0;
     std::size_t end;
-    const std::size_t step_size = num_records / NUM_THREADS;
-    for (unsigned i = 0; i != NUM_THREADS - 1; ++i) {
+    const std::size_t step_size = num_records / num_threads;
+    for (unsigned i = 0; i != num_threads - 1; ++i) {
         end = begin + step_size;
         assert(begin >= 0);
         assert(end <= num_records);
         assert(begin < end);
+        local_hists[i] = { 0 };
         new (&threads[i]) std::thread(compute_hist, &local_hists[i], data + begin, data + end);
         begin = end;
     }
-    new (&threads[NUM_THREADS - 1]) std::thread(compute_hist, &local_hists[NUM_THREADS - 1], data + begin, data + num_records);
+    new (&threads[num_threads - 1]) std::thread(compute_hist, &local_hists[num_threads - 1], data + begin, data + num_records);
 
     /* Summarize the local histograms in a global histogram. */
     histogram_t the_histogram{ 0 };
-    for (unsigned tid = 0; tid != NUM_THREADS; ++tid) {
+    for (unsigned tid = 0; tid != num_threads; ++tid) {
         threads[tid].join();
         for (std::size_t i = 0; i != 1024; ++i)
             the_histogram[i] += local_hists[tid][i];
     }
 
+    deallocate(local_hists);
+    deallocate(threads);
     return the_histogram;
 }

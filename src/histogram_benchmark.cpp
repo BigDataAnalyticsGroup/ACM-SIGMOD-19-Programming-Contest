@@ -39,6 +39,16 @@ histogram_t the_histogram;
     std::cout << "checksum: " << std::hex << checksum(the_histogram) << std::dec << '\n'; \
     std::this_thread::sleep_for(2s)
 
+#define hist_mmap_MT2(...) hist_mmap_MT(__VA_ARGS__, 2)
+#define hist_mmap_MT3(...) hist_mmap_MT(__VA_ARGS__, 3)
+#define hist_mmap_MT4(...) hist_mmap_MT(__VA_ARGS__, 4)
+#define hist_mmap_MT5(...) hist_mmap_MT(__VA_ARGS__, 5)
+#define hist_mmap_MT6(...) hist_mmap_MT(__VA_ARGS__, 6)
+#define hist_mmap_MT7(...) hist_mmap_MT(__VA_ARGS__, 7)
+#define hist_mmap_MT8(...) hist_mmap_MT(__VA_ARGS__, 8)
+#define hist_mmap_MT9(...) hist_mmap_MT(__VA_ARGS__, 9)
+#define hist_mmap_MT10(...) hist_mmap_MT(__VA_ARGS__, 10)
+
 
 using namespace std::chrono;
 using namespace std::chrono_literals;
@@ -63,10 +73,18 @@ int main(int argc, const char **argv)
     }
 
     //BENCHMARK(hist_direct); // too slow
-    BENCHMARK(hist_file);
+    //BENCHMARK(hist_file); // too slow
     //BENCHMARK(hist_file_seek); // too slow
-    BENCHMARK(hist_file_custom_buffer);
+    //BENCHMARK(hist_file_custom_buffer); // too slow
     BENCHMARK(hist_mmap);
     //BENCHMARK(hist_mmap_prefault); // too slow
-    BENCHMARK(hist_mmap_MT);
+    BENCHMARK(hist_mmap_MT2);
+    BENCHMARK(hist_mmap_MT3);
+    BENCHMARK(hist_mmap_MT4);
+    BENCHMARK(hist_mmap_MT5);
+    BENCHMARK(hist_mmap_MT6);
+    BENCHMARK(hist_mmap_MT7);
+    BENCHMARK(hist_mmap_MT8);
+    BENCHMARK(hist_mmap_MT9);
+    BENCHMARK(hist_mmap_MT10);
 }

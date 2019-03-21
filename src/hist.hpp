@@ -41,4 +41,4 @@ histogram_t hist_mmap(const char *infile);
 
 histogram_t hist_mmap_prefault(const char *infile);
 
-histogram_t hist_mmap_MT(const char *infile);
+histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads);
