@@ -9,11 +9,11 @@
 
 
 #define BENCHMARK(ALGO) \
-    benchmark<3>(#ALGO, [=]() { ALGO(argv[1], argv[2]); }); \
+    benchmark<5>(#ALGO, [=]() { ALGO(argv[1], argv[2]); }); \
     std::this_thread::sleep_for(2s)
 
 #define BENCHMARK_WITH_HISTOGRAM(ALGO) \
-    benchmark<3>(#ALGO, [=]() { ALGO(argv[1], argv[2], histogram); }); \
+    benchmark<5>(#ALGO "_with_histogram", [=]() { ALGO(argv[1], argv[2], histogram); }); \
     std::this_thread::sleep_for(2s)
 
 

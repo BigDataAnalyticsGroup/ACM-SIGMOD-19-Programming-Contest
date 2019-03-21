@@ -35,7 +35,7 @@
 histogram_t the_histogram;
 
 #define BENCHMARK(ALGO) \
-    benchmark<1>(#ALGO, [&]() { the_histogram = ALGO(argv[1]); }); \
+    benchmark<5>(#ALGO, [&]() { the_histogram = ALGO(argv[1]); }); \
     std::cout << "checksum: " << std::hex << checksum(the_histogram) << std::dec << std::endl; \
     std::this_thread::sleep_for(2s)
 

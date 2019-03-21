@@ -47,15 +47,12 @@ void example_partition(const char *infile, const char *outfile)
 {
     constexpr int kTupleSize = 100;
     constexpr std::uint16_t kNumPartitionBits = 10;
-    constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
-    constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
-    constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
+    //constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
+    //constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
+    //constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
 
     auto getPartitionId = [](const unsigned char *key) {
-        std::uint16_t pid = (*key) << kShift;
-        pid += *(key + 1) & kLowMask;
-        pid &= kMask;
-        return pid;
+        return reinterpret_cast<const record*>(key)->get_radix_bits();
     };
 
     std::ifstream is(infile);
@@ -120,15 +117,12 @@ void example_partition(const char *infile, const char *outfile, const histogram_
 {
     constexpr int kTupleSize = 100;
     constexpr std::uint16_t kNumPartitionBits = 10;
-    constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
-    constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
-    constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
+    //constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
+    //constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
+    //constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
 
     auto getPartitionId = [](const unsigned char *key) {
-        std::uint16_t pid = (*key) << kShift;
-        pid += *(key + 1) & kLowMask;
-        pid &= kMask;
-        return pid;
+        return reinterpret_cast<const record*>(key)->get_radix_bits();
     };
 
     std::ifstream is(infile);
