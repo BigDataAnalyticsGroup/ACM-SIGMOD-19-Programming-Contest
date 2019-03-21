@@ -106,7 +106,62 @@ void example_partition(const char *infile, const char *outfile)
     os.close();
 }
 
-void partition_hist_mmap(const char *infile, const char *outfile)
+void example_partition(const char *infile, const char *outfile, const histogram_t &histogram)
+{
+    constexpr int kTupleSize = 100;
+    constexpr std::uint16_t kNumPartitionBits = 10;
+    constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
+    constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
+    constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
+
+    auto getPartitionId = [](const char *key) {
+        std::uint16_t pid = (*key) << kShift;
+        pid += *(key + 1) & kLowMask;
+        pid &= kMask;
+        return pid;
+    };
+
+    std::ifstream is(infile);
+    if (!is) {
+        std::cerr << "Could not open the file\n";
+        std::exit(-1);
+    }
+
+    // get size of file
+    is.seekg(0, is.end);
+    const std::int64_t size = is.tellg();
+    is.seekg(0);
+
+    const std::int64_t num_tuples = size / kTupleSize;
+
+    const std::uint16_t kNumPartitions = 1 << kNumPartitionBits;
+    char buffer[kTupleSize];
+
+    std::vector<int> offset(kNumPartitions);
+    int count = histogram[0];
+    for (std::uint16_t p = 1; p < kNumPartitions; ++p) {
+        offset[p] = count;
+        count += histogram[p];
+    }
+
+    std::vector<char> output(size);
+
+    // read content of is
+    is.seekg(0);
+    for (std::int64_t i = 0; i < num_tuples; ++i) {
+        is.read(buffer, kTupleSize);
+        const std::uint16_t p = getPartitionId(buffer);
+        const std::uint64_t dest = offset[p]++;
+        std::memcpy(&output[dest * kTupleSize], buffer, kTupleSize);
+    }
+    is.close();
+
+    std::ofstream os(outfile);
+    os.write(output.data(), size);
+    os.close();
+}
+
+void partition_hist_mmap(const char *infile, const char *outfile, const histogram_t &histogram)
 {
     /* Open the input file. */
     FILE *in = fopen(infile, "rb");
@@ -135,18 +190,6 @@ void partition_hist_mmap(const char *infile, const char *outfile)
 
     /* Compute the number of records. */
     const unsigned num_records = size_in_bytes / sizeof(record);
-
-    /* Compute the histogram. */
-    std::array<unsigned, 1024> histogram{ 0 };
-    for (unsigned i = 0; i != num_records; ++i) {
-        const uint32_t k0 = getc_unlocked(in);
-        const uint32_t k1 = getc_unlocked(in);
-        const uint32_t pid = (k0 << 2) | (k1 >> 6);
-        for (unsigned i = 2; i != sizeof(record); ++i)
-            getc_unlocked(in);
-        assert(pid < 1024);
-        ++histogram[pid];
-    }
 
     /* Compute the partition locations. */
     std::array<uint8_t*, 1024> partitions;

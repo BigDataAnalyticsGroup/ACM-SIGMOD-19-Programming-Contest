@@ -1,4 +1,5 @@
 #include "benchmark.hpp"
+#include "hist.hpp"
 #include "radix_partition.hpp"
 #include <chrono>
 #include <cstddef>
@@ -9,6 +10,10 @@
 
 #define BENCHMARK(ALGO) \
     benchmark(#ALGO, [=]() { ALGO(argv[1], argv[2]); }); \
+    std::this_thread::sleep_for(2s)
+
+#define BENCHMARK_WITH_HISTOGRAM(ALGO) \
+    benchmark(#ALGO, [=]() { ALGO(argv[1], argv[2], histogram); }); \
     std::this_thread::sleep_for(2s)
 
 
@@ -25,6 +30,10 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
-    BENCHMARK(example_partition);
-    BENCHMARK(partition_hist_mmap);
+    /* Compute the histogram used for partitioning. */
+    histogram_t histogram = hist_mmap_MT(argv[1], 7);
+
+    //BENCHMARK(example_partition);
+    BENCHMARK_WITH_HISTOGRAM(example_partition);
+    BENCHMARK_WITH_HISTOGRAM(partition_hist_mmap);
 }

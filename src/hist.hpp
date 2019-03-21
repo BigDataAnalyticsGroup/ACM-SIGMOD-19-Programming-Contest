@@ -29,6 +29,8 @@
 #include <fstream>
 
 
+using histogram_t = std::array<unsigned, NUM_PARTITIONS>;
+
 histogram_t hist_direct(const char *infile);
 
 histogram_t hist_file(const char *infile);

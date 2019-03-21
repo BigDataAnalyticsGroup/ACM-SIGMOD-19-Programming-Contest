@@ -53,7 +53,7 @@ int main(int argc, const char **argv)
     if (mlock_status)
         warn("Unable to lock all current and future pages into physical RAM");
 
-    METHOD(argv[1], argv[2]);
+    //METHOD(argv[1], argv[2]);
 
     if (mlock_status == 0) {
         if (munlockall())

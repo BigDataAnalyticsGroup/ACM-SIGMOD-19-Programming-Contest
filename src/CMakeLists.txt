@@ -9,8 +9,10 @@ target_link_libraries(histogram_benchmark ${CMAKE_THREAD_LIBS_INIT})
 add_executable(
     partitioning_benchmark
     partitioning_benchmark.cpp
+    hist.cpp
     radix_partition.cpp
     )
+target_link_libraries(partitioning_benchmark ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(
     sorting_benchmark

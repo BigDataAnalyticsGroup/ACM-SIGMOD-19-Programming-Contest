@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 
@@ -35,7 +36,12 @@ struct __attribute__((packed)) record
 
     /** Extracts the 10 most significant bits from the key and places them in the 10 lowest bits of the result.  All
      * other bits are set to 0. */
-    uint16_t get_radix_bits() const { return (key[0] << 2) | (key[1] >> 6); }
+    uint16_t get_radix_bits() const
+    {
+        uint16_t radix = (key[0] << 2) | (key[1] >> 6);
+        assert(radix < 1024 and "radix out of range");
+        return radix;
+    }
 
     bool operator<(const record &other) const { return memcmp(this->key, other.key, 10) < 0; }
     bool operator==(const record &other) const { return memcmp(this->key, other.key, 10) == 0; }

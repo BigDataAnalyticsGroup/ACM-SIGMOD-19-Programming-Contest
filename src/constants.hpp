@@ -29,5 +29,3 @@
 
 constexpr unsigned NUM_RADIX_BITS = 10;
 constexpr unsigned NUM_PARTITIONS = 1 << NUM_RADIX_BITS;
-
-using histogram_t = std::array<unsigned, NUM_PARTITIONS>;

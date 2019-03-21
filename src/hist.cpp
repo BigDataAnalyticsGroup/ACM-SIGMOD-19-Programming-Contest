@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+#include <sstream>
 
 
 histogram_t hist_direct(const char *infile)
@@ -188,6 +189,13 @@ histogram_t hist_mmap(const char *infile)
     for (auto p = data, end = data + num_records; p != end; ++p)
         ++histogram[p->get_radix_bits()];
 
+#ifndef NDEBUG
+    unsigned sum = 0;
+    for (auto n : histogram)
+        sum += n;
+    assert(sum == num_records);
+#endif
+
     return histogram;
 }
 
@@ -224,20 +232,19 @@ histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
     const std::size_t num_records = in.size() / sizeof(*data);
 
     /* Divide the input into chunks and allocate a histogram per chunk. */
-    histogram_t *local_hists = allocate<histogram_t>(num_threads);
-    std::thread *threads = allocate<std::thread>(num_threads);
+    histogram_t *local_hists = new histogram_t[num_threads]{ {0} };
+    std::thread *threads = new std::thread[num_threads];
 
     /* Spawn a thread per chunk to compute the local histogram. */
     std::size_t begin = 0;
     std::size_t end;
     const std::size_t step_size = num_records / num_threads;
-    for (unsigned i = 0; i != num_threads - 1; ++i) {
+    for (unsigned tid = 0; tid != num_threads - 1; ++tid) {
         end = begin + step_size;
         assert(begin >= 0);
         assert(end <= num_records);
         assert(begin < end);
-        local_hists[i] = { 0 };
-        new (&threads[i]) std::thread(compute_hist, &local_hists[i], data + begin, data + end);
+        threads[tid] = std::thread(compute_hist, &local_hists[tid], data + begin, data + end);
         begin = end;
     }
     new (&threads[num_threads - 1]) std::thread(compute_hist, &local_hists[num_threads - 1], data + begin, data + num_records);
@@ -250,7 +257,14 @@ histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
             the_histogram[i] += local_hists[tid][i];
     }
 
-    deallocate(local_hists);
-    deallocate(threads);
+#ifndef NDEBUG
+    unsigned sum = 0;
+    for (auto n : the_histogram)
+        sum += n;
+    assert(sum == num_records);
+#endif
+
+    delete []local_hists;
+    delete []threads;
     return the_histogram;
 }

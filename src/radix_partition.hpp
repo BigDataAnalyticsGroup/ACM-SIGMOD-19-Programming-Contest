@@ -25,9 +25,13 @@
 
 #pragma once
 
+#include "hist.hpp"
+
 
 /** Partitioning algorithm from the provided example. */
 void example_partition(const char *infile, const char *outfile);
 
+void example_partition(const char *infile, const char *outfile, const histogram_t &histogram);
+
 /** Partition by computing a histogram first and then writing records to their destinations. */
-void partition_hist_mmap(const char *infile, const char *outfile);
+void partition_hist_mmap(const char *infile, const char *outfile, const histogram_t &histogram);
