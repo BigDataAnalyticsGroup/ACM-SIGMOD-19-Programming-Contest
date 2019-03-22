@@ -30,8 +30,10 @@
 
 
 //using histogram_t = std::array<unsigned, NUM_PARTITIONS>;
-class histogram_t : public std::array<unsigned, NUM_PARTITIONS>
+struct histogram_t : public std::array<unsigned, NUM_PARTITIONS>
 {
+    unsigned checksum() const;
+
     friend std::ostream & operator<<(std::ostream &out, const histogram_t &histogram);
 };
 

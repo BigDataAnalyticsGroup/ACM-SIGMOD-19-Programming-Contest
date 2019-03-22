@@ -32,6 +32,9 @@
 #include <chrono>
 #include <cstdint>
 
+#include <iomanip>
+#include <iostream>
+
 
 using namespace std::chrono;
 
@@ -51,6 +54,7 @@ void radix_hist(const char *infile, const char *outfile)
     std::cerr << histogram << std::endl;
     const auto t_hist_end = high_resolution_clock::now();
     std::cerr << "t_histogram: " << duration_cast<microseconds>(t_hist_end - t_hist_begin).count() / 1e3 << " ms\n";
+    std::cerr << "histogram checksum: " << std::hex << histogram.checksum() << std::dec << std::endl;
 
     /* Allocate output file. */
     MMapFile out(outfile, in.size());

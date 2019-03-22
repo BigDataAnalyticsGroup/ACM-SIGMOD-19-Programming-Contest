@@ -37,7 +37,7 @@ histogram_t the_histogram;
 
 #define BENCHMARK(ALGO) \
     benchmark<5>(#ALGO, [&]() { the_histogram = ALGO(begin, end); }); \
-    std::cout << "checksum: " << std::hex << checksum(the_histogram) << std::dec << std::endl; \
+    std::cout << "checksum: " << std::hex << the_histogram.checksum() << std::dec << std::endl; \
     std::this_thread::sleep_for(2s)
 
 #define hist_MT2(...)  hist_MT(__VA_ARGS__, 2)
@@ -53,23 +53,6 @@ histogram_t the_histogram;
 
 using namespace std::chrono;
 using namespace std::chrono_literals;
-
-
-void dump_histogram(const histogram_t &histogram)
-{
-    for (unsigned i = 0; i != histogram.size(); ++i) {
-        if (histogram[i])
-            std::cerr << "Histogram[" << i << "]: " << histogram[i] << '\n';
-    }
-}
-
-uint32_t checksum(histogram_t &histogram)
-{
-    uint32_t checksum = 0;
-    for (auto elem : histogram)
-        checksum = (checksum ^ (checksum << 16)) + elem;
-    return checksum;
-}
 
 
 int main(int argc, const char **argv)

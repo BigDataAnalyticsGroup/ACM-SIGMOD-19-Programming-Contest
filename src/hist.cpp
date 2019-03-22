@@ -30,6 +30,14 @@
 #include <thread>
 
 
+unsigned histogram_t::checksum() const
+{
+    unsigned checksum = 0;
+    for (auto elem : *this)
+        checksum = checksum * 7 + elem;
+    return checksum;
+}
+
 std::ostream & operator<<(std::ostream &out, const histogram_t &histogram)
 {
     unsigned sum = 0;
