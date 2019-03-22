@@ -24,7 +24,8 @@
 
 #pragma once
 
-#include "constants.hpp"
+#include "record.hpp"
+#include <array>
 #include <cstdio>
 #include <fstream>
 

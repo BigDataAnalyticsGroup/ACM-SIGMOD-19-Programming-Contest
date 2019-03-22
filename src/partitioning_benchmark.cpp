@@ -33,7 +33,5 @@ int main(int argc, const char **argv)
     /* Compute the histogram used for partitioning. */
     histogram_t histogram = hist_mmap(argv[1]);
 
-    BENCHMARK(example_partition);
-    BENCHMARK_WITH_HISTOGRAM(example_partition);
     BENCHMARK_WITH_HISTOGRAM(partition_hist_mmap);
 }

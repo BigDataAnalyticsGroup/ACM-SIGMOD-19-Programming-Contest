@@ -25,7 +25,6 @@
 
 #include "sort.hpp"
 
-#include "constants.hpp"
 #include "mmap.hpp"
 #include "record.hpp"
 #include <algorithm>

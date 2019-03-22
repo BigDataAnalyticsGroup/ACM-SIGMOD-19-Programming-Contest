@@ -25,7 +25,6 @@
 
 #include "radix_partition.hpp"
 
-#include "constants.hpp"
 #include "record.hpp"
 #include <array>
 #include <cassert>
@@ -43,138 +42,6 @@
 #include <vector>
 
 
-void example_partition(const char *infile, const char *outfile)
-{
-    constexpr int kTupleSize = 100;
-    constexpr std::uint16_t kNumPartitionBits = 10;
-    //constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
-    //constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
-    //constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
-
-    auto getPartitionId = [](const unsigned char *key) {
-        return reinterpret_cast<const record*>(key)->get_radix_bits();
-    };
-
-    std::ifstream is(infile);
-    if (!is) {
-        std::cerr << "Could not open the file\n";
-        std::exit(-1);
-    }
-
-    // get size of file
-    is.seekg(0, is.end);
-    const std::int64_t size = is.tellg();
-    is.seekg(0);
-
-    const std::int64_t num_tuples = size / kTupleSize;
-
-    const std::uint16_t kNumPartitions = 1 << kNumPartitionBits;
-    std::vector<int> histogram(kNumPartitions);
-    unsigned char buffer[kTupleSize];
-
-    // read content of is
-    for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
-        const std::uint16_t p = getPartitionId(buffer);
-        ++histogram[p];
-    }
-
-#ifndef NDEBUG
-    {
-        unsigned sum = 0;
-        for (auto n : histogram)
-            sum += n;
-        assert(sum == num_tuples);
-    }
-#endif
-
-    std::vector<int> offset(kNumPartitions);
-    int count = histogram[0];
-    for (std::uint16_t p = 1; p < kNumPartitions; ++p) {
-        offset[p] = count;
-        count += histogram[p];
-    }
-    assert(count == num_tuples);
-
-    std::vector<unsigned char> output(size);
-
-    // read content of is
-    is.seekg(0);
-    for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
-        const std::uint16_t p = getPartitionId(buffer);
-        const std::uint64_t dest = offset[p]++;
-        std::memcpy(&output[dest * kTupleSize], buffer, kTupleSize);
-    }
-    is.close();
-
-    std::ofstream os(outfile);
-    os.write(reinterpret_cast<char*>(output.data()), size);
-    os.close();
-}
-
-void example_partition(const char *infile, const char *outfile, const histogram_t &histogram)
-{
-    constexpr int kTupleSize = 100;
-    constexpr std::uint16_t kNumPartitionBits = 10;
-    //constexpr std::uint16_t kShift = kNumPartitionBits - sizeof(char) * 8; // 10 - 1 * 8 = 2
-    //constexpr std::uint16_t kLowMask = (1u << kShift) - 1u; // 0b11
-    //constexpr std::uint16_t kMask = (1u << kNumPartitionBits) - 1u; // 0b1111111111
-
-    auto getPartitionId = [](const unsigned char *key) {
-        return reinterpret_cast<const record*>(key)->get_radix_bits();
-    };
-
-    std::ifstream is(infile);
-    if (!is) {
-        std::cerr << "Could not open the file\n";
-        std::exit(-1);
-    }
-
-    // get size of file
-    is.seekg(0, is.end);
-    const std::int64_t size = is.tellg();
-    is.seekg(0);
-
-    const std::int64_t num_tuples = size / kTupleSize;
-
-    const std::uint16_t kNumPartitions = 1 << kNumPartitionBits;
-    unsigned char buffer[kTupleSize];
-
-#ifndef NDEBUG
-    {
-        unsigned sum = 0;
-        for (auto n : histogram)
-            sum += n;
-        assert(sum == num_tuples);
-    }
-#endif
-
-    std::vector<int> offset(kNumPartitions);
-    int count = histogram[0];
-    for (std::uint16_t p = 1; p < kNumPartitions; ++p) {
-        offset[p] = count;
-        count += histogram[p];
-    }
-    assert(count == num_tuples);
-
-    std::vector<unsigned char> output(size);
-
-    // read content of is
-    is.seekg(0);
-    for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
-        const std::uint16_t p = getPartitionId(buffer);
-        const std::uint64_t dest = offset[p]++;
-        std::memcpy(&output[dest * kTupleSize], buffer, kTupleSize);
-    }
-    is.close();
-
-    std::ofstream os(outfile);
-    os.write(reinterpret_cast<char*>(output.data()), size);
-    os.close();
-}
-
 void partition_hist_mmap(const char *infile, const char *outfile, const histogram_t &histogram)
 {
     /* Open the input file. */
@@ -190,7 +57,6 @@ void partition_hist_mmap(const char *infile, const char *outfile, const histogra
     const auto size_in_bytes = stat_in.st_size;
 
     /* Allocate output file. */
-    //const int fildes_out = creat(outfile, [> mode = <] 0644); // rw-r--r--
     const int fildes_out = open(outfile, O_CREAT|O_TRUNC|O_RDWR, /* mode = */ 0644); // rw-r--r--
     if (fildes_out == -1)
         err(EXIT_FAILURE, "Could not create output file '%s'", outfile);
@@ -206,9 +72,9 @@ void partition_hist_mmap(const char *infile, const char *outfile, const histogra
     const unsigned num_records = size_in_bytes / sizeof(record);
 
     /* Compute the partition locations. */
-    std::array<uint8_t*, 1024> partitions;
+    std::array<uint8_t*, NUM_PARTITIONS> partitions;
     unsigned offset = 0;
-    for (std::size_t i = 0; i != 1024; ++i) {
+    for (std::size_t i = 0; i != NUM_PARTITIONS; ++i) {
         partitions[i] = static_cast<uint8_t*>(out) + offset * sizeof(record);
         offset += histogram[i];
     }
@@ -218,12 +84,9 @@ void partition_hist_mmap(const char *infile, const char *outfile, const histogra
     rewind(in); // go back to the start
     for (unsigned i = 0; i != num_records; ++i) {
         const uint8_t k0 = getc_unlocked(in);
-        const uint8_t k1 = getc_unlocked(in);
-        const uint32_t pid = (k0 << 2) | (k1 >> 6);
-        uint8_t *p = partitions[pid];
+        uint8_t *p = partitions[k0];
         p[0] = k0;
-        p[1] = k1;
-        fread(p + 2, /* size = */ 1, /* nmemb = */ 98, in);
+        fread(p + 1, /* size = */ 1, /* nmemb = */ 99, in);
         p += 100;
     }
 

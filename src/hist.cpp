@@ -105,7 +105,7 @@ histogram_t hist_direct(const char *infile)
     for (unsigned i = 0; i != num_records; ++i) {
         read(fildes, buffer, sizeof buffer);
         const uint32_t pid = (uint32_t(buffer[0]) << 2) | (uint32_t(buffer[1]) >> 6);
-        assert(pid < 1024);
+        assert(pid < NUM_PARTITIONS);
         ++histogram[pid];
     }
 
@@ -144,7 +144,7 @@ histogram_t hist_file(const char *infile)
         const uint32_t pid = (k0 << 2) | (k1 >> 6);
         for (unsigned i = 2; i != sizeof(record); ++i)
             getc_unlocked(in);
-        assert(pid < 1024);
+        assert(pid < NUM_PARTITIONS);
         ++histogram[pid];
     }
     assert(getc_unlocked(in) == EOF and "expected end-of-file");
@@ -184,7 +184,7 @@ histogram_t hist_file_seek(const char *infile)
         assert(k0 < 256);
         assert(k1 < 256);
         const uint32_t pid = (k0 << 2) | (k1 >> 6);
-        assert(pid < 1024);
+        assert(pid < NUM_PARTITIONS);
         ++histogram[pid];
         fseek(in, 98, SEEK_CUR);
     }
@@ -230,7 +230,7 @@ histogram_t hist_file_custom_buffer(const char *infile)
         const uint32_t pid = (k0 << 2) | (k1 >> 6);
         for (unsigned i = 2; i != sizeof(record); ++i)
             getc_unlocked(in);
-        assert(pid < 1024);
+        assert(pid < NUM_PARTITIONS);
         ++histogram[pid];
     }
     assert(getc_unlocked(in) == EOF and "expected end-of-file");
@@ -325,7 +325,7 @@ histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
     histogram_t the_histogram{ 0 };
     for (unsigned tid = 0; tid != num_threads; ++tid) {
         threads[tid].join();
-        for (std::size_t i = 0; i != 1024; ++i)
+        for (std::size_t i = 0; i != NUM_PARTITIONS; ++i)
             the_histogram[i] += local_hists[tid][i];
     }
 
