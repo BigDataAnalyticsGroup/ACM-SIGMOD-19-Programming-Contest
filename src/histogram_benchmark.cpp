@@ -25,6 +25,7 @@
 #include "benchmark.hpp"
 #include "hist.hpp"
 #include "mmap.hpp"
+#include "utility.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -36,6 +37,7 @@
 histogram_t the_histogram;
 
 #define BENCHMARK(ALGO) \
+    clear_page_cache(); \
     benchmark<5>(#ALGO, [&]() { the_histogram = ALGO(begin, end); }); \
     std::cout << "checksum: " << std::hex << the_histogram.checksum() << std::dec << std::endl; \
     std::this_thread::sleep_for(2s)

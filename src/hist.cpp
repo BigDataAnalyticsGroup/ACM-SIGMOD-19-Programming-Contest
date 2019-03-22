@@ -27,23 +27,36 @@
 #include "mmap.hpp"
 #include "record.hpp"
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <err.h>
+#include <fcntl.h>
 #include <thread>
+#include <unistd.h>
 
+
+constexpr std::size_t BLOCK_SIZE = 4096;
+
+
+unsigned histogram_t::count() const
+{
+    unsigned sum = 0;
+    for (auto n : *this)
+        sum += n;
+    return sum;
+}
 
 unsigned histogram_t::checksum() const
 {
     unsigned checksum = 0;
-    for (auto elem : *this)
-        checksum = checksum * 7 + elem;
+    for (auto n : *this)
+        checksum = checksum * 7 + n;
     return checksum;
 }
 
 std::ostream & operator<<(std::ostream &out, const histogram_t &histogram)
 {
-    unsigned sum = 0;
-    for (auto n : histogram)
-        sum += n;
-    out << "Histogram of " << sum << " elements:\n";
+    out << "Histogram of " << histogram.count() << " elements:\n";
     for (std::size_t i = 0; i != histogram.size(); ++i) {
         if (histogram[i])
             out << "  " << i << ": " << histogram[i] << '\n';
@@ -59,13 +72,7 @@ histogram_t hist(const record *begin, const record *end)
     histogram_t histogram{ {0} };
     for (auto p = begin; p != end; ++p)
         ++histogram[p->get_radix_bits()];
-
-#ifndef NDEBUG
-    unsigned sum = 0;
-    for (auto n : histogram)
-        sum += n;
-    assert(sum == num_records);
-#endif
+    assert(histogram.count() == num_records);
 
     return histogram;
 }
@@ -105,15 +112,123 @@ histogram_t hist_MT(const record *begin, const record *end, const unsigned num_t
         for (std::size_t i = 0; i != NUM_PARTITIONS; ++i)
             the_histogram[i] += local_hists[tid][i];
     }
-
-#ifndef NDEBUG
-    unsigned sum = 0;
-    for (auto n : the_histogram)
-        sum += n;
-    assert(sum == num_records);
-#endif
+    assert(the_histogram.count() == num_records);
 
     delete []local_hists;
     delete []threads;
     return the_histogram;
+}
+
+histogram_t hist_from_file_mmap(const char *filename)
+{
+    MMapFile file(filename);
+
+    auto arr = static_cast<record*>(file.addr());
+    const auto size = file.size() / sizeof(*arr);
+
+    return hist(arr, arr + size);
+}
+
+histogram_t hist_from_file_mmap_MT(const char *filename, const unsigned num_threads)
+{
+    MMapFile file(filename);
+
+    auto arr = static_cast<record*>(file.addr());
+    const auto size = file.size() / sizeof(*arr);
+
+    return hist_MT(arr, arr + size, num_threads);
+}
+
+histogram_t hist_from_file_direct(const char *filename)
+{
+    (void) filename;
+    histogram_t histogram{ {0} };
+#if 0
+    constexpr std::size_t BLOCK_SIZE = 4096;
+    constexpr std::size_t BUFFER_SIZE = sizeof(record) * BLOCK_SIZE;
+
+    int fd = open(filename, O_RDONLY|O_DIRECT);
+    if (fd == -1)
+        err(EXIT_FAILURE, "Could not open file '%s'", filename);
+
+    if (posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL))
+        warn("fadvise() failed");
+
+    void *buffer = std::aligned_alloc(BLOCK_SIZE, BLOCK_SIZE);
+    while (int ret = read(fd, buffer, BLOCK_SIZE)) {
+        if (ret == -1)
+            err(EXIT_FAILURE, "Failed to read from file '%s'", filename);
+        //for (std::size_t i = 0, end = ret / sizeof(record); i != end; ++i)
+            //++histogram[buffer[i].get_radix_bits()];
+    }
+
+    free(buffer);
+    close(fd);
+#endif
+    return histogram;
+}
+
+histogram_t hist_from_file_unbuffered(const char *filename)
+{
+    histogram_t histogram{ {0} };
+
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1)
+        err(EXIT_FAILURE, "Could not open file '%s'", filename);
+
+    if (posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL))
+        warn("fadvise() failed");
+
+    record buffer;
+    while (int ret = read(fd, &buffer, sizeof(buffer))) {
+        if (ret != sizeof(buffer))
+            err(EXIT_FAILURE, "Reading next record failed and returned %d", ret);
+        ++histogram[buffer.get_radix_bits()];
+    }
+
+    close(fd);
+    return histogram;
+}
+
+histogram_t hist_from_file_buffered_default(const char *filename)
+{
+    histogram_t histogram{ {0} };
+
+    FILE *file = fopen(filename, "rb");
+    if (not file)
+        err(EXIT_FAILURE, "Could not open file '%s'", filename);
+
+    if (posix_fadvise(fileno(file), 0, 0, POSIX_FADV_SEQUENTIAL))
+        warn("fadvise() failed");
+
+    record buffer;
+    while (fread(&buffer, sizeof(buffer), 1, file) == 1)
+        ++histogram[buffer.get_radix_bits()];
+
+    fclose(file);
+    return histogram;
+}
+
+histogram_t hist_from_file_buffered_custom(const char *filename)
+{
+    histogram_t histogram{ {0} };
+
+    FILE *file = fopen(filename, "rb");
+    if (not file)
+        err(EXIT_FAILURE, "Could not open file '%s'", filename);
+
+    if (posix_fadvise(fileno(file), 0, 0, POSIX_FADV_SEQUENTIAL))
+        warn("fadvise() failed");
+
+    constexpr std::size_t BUFFER_SIZE = 64 * BLOCK_SIZE;
+    char *fbuffer = reinterpret_cast<char*>(std::aligned_alloc(BLOCK_SIZE, BUFFER_SIZE));
+    setvbuf(file, fbuffer, _IOFBF, BUFFER_SIZE);
+
+    record buffer;
+    while (fread(&buffer, sizeof(buffer), 1, file) == 1)
+        ++histogram[buffer.get_radix_bits()];
+
+    free(fbuffer);
+    fclose(file);
+    return histogram;
 }

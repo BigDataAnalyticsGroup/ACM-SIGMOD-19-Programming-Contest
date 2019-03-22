@@ -29,13 +29,33 @@
 #include <iostream>
 
 
-//using histogram_t = std::array<unsigned, NUM_PARTITIONS>;
+/** The histogram. */
 struct histogram_t : public std::array<unsigned, NUM_PARTITIONS>
 {
+    /** Computes the total count of entries in the histogram. */
+    unsigned count() const;
+    /** Computes a checksum of the histogram. */
     unsigned checksum() const;
 
     friend std::ostream & operator<<(std::ostream &out, const histogram_t &histogram);
 };
 
+/** Implements histogram generation from an array of records. */
 histogram_t hist(const record *begin, const record *end);
+/** Implements histogram generation from an array of records. (Multi-threaded) */
 histogram_t hist_MT(const record *begin, const record *end, const unsigned num_threads);
+
+/** Generates a histogram of a record file using mmap(). */
+histogram_t hist_from_file_mmap(const char *filename);
+/** Generates a histogram of a record file using mmap(). (Multi-threaded) */
+histogram_t hist_from_file_mmap_MT(const char *filename, const unsigned num_threads);
+
+/** Generates a histogram of a record file using unbuffered reads. */
+histogram_t hist_from_file_direct(const char *filename);
+
+/** Generates a histogram of a record file using unbuffered reads. */
+histogram_t hist_from_file_unbuffered(const char *filename);
+
+histogram_t hist_from_file_buffered_default(const char *filename);
+
+histogram_t hist_from_file_buffered_custom(const char *filename);

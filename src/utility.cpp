@@ -1,4 +1,4 @@
-//===== utility.hpp ====================================================================================================
+//===== utility.cpp ====================================================================================================
 //
 //  Author: Immanuel Haffner <haffner.immanuel@gmail.com>
 //
@@ -22,22 +22,23 @@
 //
 //======================================================================================================================
 
-#pragma once
+#include "utility.hpp"
+
+#include <err.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 
-#include <cstdlib>
+constexpr const char * const PROC_DROP_CACHES = "/proc/sys/vm/drop_caches";
 
+void clear_page_cache()
+{
 
-template<typename T>
-T * allocate(std::size_t count) { return static_cast<T*>(malloc(count * sizeof(T))); }
-
-template<typename T>
-T * reallocate(T *ptr, std::size_t count) { return static_cast<T*>(realloc(ptr, count * sizeof(T))); }
-
-template<typename T>
-void deallocate(T *ptr) { free(static_cast<void*>(ptr)); }
-
-template<typename T>
-T * stack_allocate(std::size_t count) { return static_cast<T*>(alloca(count * sizeof(T))); }
-
-void clear_page_cache();
+    int fd = open(PROC_DROP_CACHES, O_WRONLY);
+    if (fd == -1) {
+        warn("Could not open '%s' to drop caches", PROC_DROP_CACHES);
+        return;
+    }
+    write(fd, "1", 1);
+    close(fd);
+}
