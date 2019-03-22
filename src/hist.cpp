@@ -73,7 +73,7 @@ histogram_t hist_MT(const record *begin, const record *end, const unsigned num_t
     const std::size_t num_records = end - begin;
 
     /* Divide the input into chunks and allocate a histogram per chunk. */
-    histogram_t *local_hists = new histogram_t[num_threads]{ {{0}} };
+    histogram_t *local_hists = new histogram_t[num_threads]{ {{{0}}} };
     std::thread *threads = new std::thread[num_threads];
 
     /* Spawn a thread per chunk to compute the local histogram. */
