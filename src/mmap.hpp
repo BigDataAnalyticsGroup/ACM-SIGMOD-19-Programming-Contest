@@ -36,8 +36,10 @@
 
 struct MMapFile
 {
-    MMapFile(const char *filename, int flags = O_RDONLY, bool populate = false) : filename(filename) {
-        fd_ = open(filename, flags);
+    /* Map an existent file into memory. */
+    MMapFile(const char *filename, bool RW = false, bool populate = false) : filename(filename)
+    {
+        fd_ = open(filename, RW ? O_RDWR : O_RDONLY);
         if (fd_ == -1)
             throw std::runtime_error("failed to open file");
 
@@ -54,7 +56,28 @@ struct MMapFile
             throw std::runtime_error("failed to mmap file");
     }
 
-    ~MMapFile() {
+    /* Create a new file of specified size and map it into memory. */
+    MMapFile(const char *filename, std::size_t size_in_bytes, bool populate = false)
+        : filename(filename)
+        , size_(size_in_bytes)
+    {
+        fd_ = open(filename, O_CREAT|O_TRUNC|O_RDWR, /* mode = */ 0644); // rw-r--r--
+        if (fd_ == -1)
+            throw std::runtime_error("failed to open file");
+
+        if (ftruncate(fd_, size_))
+            throw std::runtime_error("failed to set file size");
+
+        if (populate)
+            addr_ = mmap(nullptr, size_, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_POPULATE, fd_, 0);
+        else
+            addr_ = mmap(nullptr, size_, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd_, 0);
+        if (addr_ == MAP_FAILED)
+            throw std::runtime_error("failed to mmap file");
+    }
+
+    ~MMapFile()
+    {
         if (munmap(addr_, size_) != 0)
             std::cerr << "Failed to unmap memory mapped file" << std::endl;
         if (close(fd_) != 0)

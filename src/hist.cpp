@@ -26,239 +26,30 @@
 
 #include "mmap.hpp"
 #include "record.hpp"
-#include "utility.hpp"
-#include <algorithm>
-#include <atomic>
 #include <cassert>
-#include <err.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <thread>
-#include <unistd.h>
-#include <sstream>
 
 
-histogram_t example_hist(const char *infile)
+std::ostream & operator<<(std::ostream &out, const histogram_t &histogram)
 {
-    constexpr int kTupleSize = 100;
-
-    auto getPartitionId = [](const unsigned char *key) {
-        return reinterpret_cast<const record*>(key)->get_radix_bits();
-    };
-
-    std::ifstream is(infile);
-    if (!is) {
-        std::cerr << "Could not open the file\n";
-        std::exit(-1);
-    }
-
-    // get size of file
-    is.seekg(0, is.end);
-    const std::int64_t size = is.tellg();
-    is.seekg(0);
-
-    const std::int64_t num_tuples = size / kTupleSize;
-
-    histogram_t histogram{ 0 };
-    unsigned char buffer[kTupleSize];
-
-    // read content of is
-    for (std::int64_t i = 0; i < num_tuples; ++i) {
-        is.read(reinterpret_cast<char*>(buffer), kTupleSize);
-        const std::uint16_t p = getPartitionId(buffer);
-        ++histogram[p];
-    }
-
-#ifndef NDEBUG
-    {
-        unsigned sum = 0;
-        for (auto n : histogram)
-            sum += n;
-        assert(sum == num_tuples);
-    }
-#endif
-
-    is.close();
-    return histogram;
-}
-
-histogram_t hist_direct(const char *infile)
-{
-    /* Open the input file. */
-    int fildes = open(infile, O_RDONLY);
-    if (-1 == fildes)
-        err(EXIT_FAILURE, "Could not open file '%s'", infile);
-
-    /* Retrieve file size in bytes. */
-    struct stat stat_in;
-    if (fstat(fildes, &stat_in))
-        err(EXIT_FAILURE, "Could not stat file '%s'", infile);
-    const auto size_in_bytes = stat_in.st_size;
-
-    /* Compute the number of records. */
-    const unsigned num_records = size_in_bytes / sizeof(record);
-
-    /* Compute the histogram. */
-    char buffer[sizeof(record)];
-    histogram_t histogram{ 0 };
-    for (unsigned i = 0; i != num_records; ++i) {
-        read(fildes, buffer, sizeof buffer);
-        const uint32_t pid = (uint32_t(buffer[0]) << 2) | (uint32_t(buffer[1]) >> 6);
-        assert(pid < NUM_PARTITIONS);
-        ++histogram[pid];
-    }
-
-#ifndef NDEBUG
     unsigned sum = 0;
     for (auto n : histogram)
         sum += n;
-    assert(sum == num_records);
-#endif
-
-    close(fildes);
-    return histogram;
-}
-
-histogram_t hist_file(const char *infile)
-{
-    /* Open the input file. */
-    FILE *in = fopen(infile, "r");
-    if (not in)
-        err(EXIT_FAILURE, "Could not open file '%s'", infile);
-
-    /* Retrieve file size in bytes. */
-    struct stat stat_in;
-    if (fstat(fileno(in), &stat_in))
-        err(EXIT_FAILURE, "Could not stat file '%s'", infile);
-    const auto size_in_bytes = stat_in.st_size;
-
-    /* Compute the number of records. */
-    const unsigned num_records = size_in_bytes / sizeof(record);
-
-    /* Compute the histogram. */
-    histogram_t histogram{ 0 };
-    for (unsigned i = 0; i != num_records; ++i) {
-        const uint32_t k0 = getc_unlocked(in);
-        const uint32_t k1 = getc_unlocked(in);
-        const uint32_t pid = (k0 << 2) | (k1 >> 6);
-        for (unsigned i = 2; i != sizeof(record); ++i)
-            getc_unlocked(in);
-        assert(pid < NUM_PARTITIONS);
-        ++histogram[pid];
+    out << "Histogram of " << sum << " elements:\n";
+    for (std::size_t i = 0; i != histogram.size(); ++i) {
+        if (histogram[i])
+            out << "  " << i << ": " << histogram[i] << '\n';
     }
-    assert(getc_unlocked(in) == EOF and "expected end-of-file");
-
-#ifndef NDEBUG
-    unsigned sum = 0;
-    for (auto n : histogram)
-        sum += n;
-    assert(sum == num_records);
-#endif
-
-    fclose(in);
-    return histogram;
+    return out;
 }
 
-histogram_t hist_file_seek(const char *infile)
+histogram_t hist(const record *begin, const record *end)
 {
-    /* Open the input file. */
-    FILE *in = fopen(infile, "r");
-    if (not in)
-        err(EXIT_FAILURE, "Could not open file '%s'", infile);
-
-    /* Retrieve file size in bytes. */
-    struct stat stat_in;
-    if (fstat(fileno(in), &stat_in))
-        err(EXIT_FAILURE, "Could not stat file '%s'", infile);
-    const auto size_in_bytes = stat_in.st_size;
-
-    /* Compute the number of records. */
-    const unsigned num_records = size_in_bytes / sizeof(record);
+    const std::size_t num_records = end - begin;
 
     /* Compute the histogram. */
-    histogram_t histogram{ 0 };
-    for (unsigned i = 0; i != num_records; ++i) {
-        const uint32_t k0 = getc_unlocked(in);
-        const uint32_t k1 = getc_unlocked(in);
-        assert(k0 < 256);
-        assert(k1 < 256);
-        const uint32_t pid = (k0 << 2) | (k1 >> 6);
-        assert(pid < NUM_PARTITIONS);
-        ++histogram[pid];
-        fseek(in, 98, SEEK_CUR);
-    }
-    assert(getc_unlocked(in) == EOF and "expected end-of-file");
-
-#ifndef NDEBUG
-    unsigned sum = 0;
-    for (auto n : histogram)
-        sum += n;
-    assert(sum == num_records);
-#endif
-
-    fclose(in);
-    return histogram;
-}
-
-histogram_t hist_file_custom_buffer(const char *infile)
-{
-    /* Open the input file. */
-    FILE *in = std::fopen(infile, "r");
-    if (not in)
-        err(EXIT_FAILURE, "Could not open file '%s'", infile);
-
-    /* Retrieve file size in bytes. */
-    struct stat stat_in;
-    if (fstat(fileno(in), &stat_in))
-        err(EXIT_FAILURE, "Could not stat file '%s'", infile);
-    const auto size_in_bytes = stat_in.st_size;
-
-    /* Compute the number of records. */
-    const unsigned num_records = size_in_bytes / sizeof(record);
-
-    /* Use custom buffer. */
-    constexpr std::size_t BUFFER_SIZE = 32 * 1024; // 32 KiB
-    char *buf = static_cast<char*>(std::aligned_alloc(4096, BUFFER_SIZE));
-    setvbuf(in, buf, /* mode = */ _IOFBF, BUFFER_SIZE);
-
-    /* Compute the histogram. */
-    histogram_t histogram{ 0 };
-    for (unsigned i = 0; i != num_records; ++i) {
-        const uint32_t k0 = getc_unlocked(in);
-        const uint32_t k1 = getc_unlocked(in);
-        const uint32_t pid = (k0 << 2) | (k1 >> 6);
-        for (unsigned i = 2; i != sizeof(record); ++i)
-            getc_unlocked(in);
-        assert(pid < NUM_PARTITIONS);
-        ++histogram[pid];
-    }
-    assert(getc_unlocked(in) == EOF and "expected end-of-file");
-
-#ifndef NDEBUG
-    unsigned sum = 0;
-    for (auto n : histogram)
-        sum += n;
-    assert(sum == num_records);
-#endif
-
-    std::fclose(in);
-    std::free(buf);
-    return histogram;
-}
-
-histogram_t hist_mmap(const char *infile)
-{
-    /* Open the input file. */
-    MMapFile in(infile);
-
-    /* Access the data as array of struct. */
-    auto data = reinterpret_cast<record*>(in.addr());
-    const std::size_t num_records = in.size() / sizeof(*data);
-
-    /* Compute the histogram. */
-    histogram_t histogram{ 0 };
-    for (auto p = data, end = data + num_records; p != end; ++p)
+    histogram_t histogram{ {0} };
+    for (auto p = begin; p != end; ++p)
         ++histogram[p->get_radix_bits()];
 
 #ifndef NDEBUG
@@ -271,24 +62,7 @@ histogram_t hist_mmap(const char *infile)
     return histogram;
 }
 
-histogram_t hist_mmap_prefault(const char *infile)
-{
-    /* Open the input file. */
-    MMapFile in(infile, O_RDONLY, true);
-
-    /* Access the data as array of struct. */
-    auto data = reinterpret_cast<record*>(in.addr());
-    const std::size_t num_records = in.size() / sizeof(*data);
-
-    /* Compute the histogram. */
-    histogram_t histogram{ 0 };
-    for (auto p = data, end = data + num_records; p != end; ++p)
-        ++histogram[p->get_radix_bits()];
-
-    return histogram;
-}
-
-histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
+histogram_t hist_MT(const record *begin, const record *end, const unsigned num_threads)
 {
     /* Lambda to compute the histogram of a range. */
     auto compute_hist = [](histogram_t *histogram, const record *begin, const record *end) {
@@ -296,33 +70,28 @@ histogram_t hist_mmap_MT(const char *infile, const unsigned num_threads)
             ++(*histogram)[p->get_radix_bits()];
     };
 
-    /* Open the input file. */
-    MMapFile in(infile);
-
-    /* Access the data as array of struct. */
-    auto data = reinterpret_cast<record*>(in.addr());
-    const std::size_t num_records = in.size() / sizeof(*data);
+    const std::size_t num_records = end - begin;
 
     /* Divide the input into chunks and allocate a histogram per chunk. */
     histogram_t *local_hists = new histogram_t[num_threads]{ {{0}} };
     std::thread *threads = new std::thread[num_threads];
 
     /* Spawn a thread per chunk to compute the local histogram. */
-    std::size_t begin = 0;
-    std::size_t end;
+    std::size_t partition_begin = 0;
+    std::size_t partition_end;
     const std::size_t step_size = num_records / num_threads;
     for (unsigned tid = 0; tid != num_threads - 1; ++tid) {
-        end = begin + step_size;
-        assert(begin >= 0);
-        assert(end <= num_records);
-        assert(begin < end);
-        threads[tid] = std::thread(compute_hist, &local_hists[tid], data + begin, data + end);
-        begin = end;
+        partition_end = partition_begin + step_size;
+        assert(partition_begin >= 0);
+        assert(partition_end <= num_records);
+        assert(partition_begin < partition_end);
+        threads[tid] = std::thread(compute_hist, &local_hists[tid], begin + partition_begin, begin + partition_end);
+        partition_begin = partition_end;
     }
-    new (&threads[num_threads - 1]) std::thread(compute_hist, &local_hists[num_threads - 1], data + begin, data + num_records);
+    new (&threads[num_threads - 1]) std::thread(compute_hist, &local_hists[num_threads - 1], begin + partition_begin, end);
 
     /* Summarize the local histograms in a global histogram. */
-    histogram_t the_histogram{ 0 };
+    histogram_t the_histogram{ {0} };
     for (unsigned tid = 0; tid != num_threads; ++tid) {
         threads[tid].join();
         for (std::size_t i = 0; i != NUM_PARTITIONS; ++i)

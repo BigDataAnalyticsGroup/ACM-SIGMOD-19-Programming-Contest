@@ -18,8 +18,8 @@
 //      limitations under the License.
 //
 //  Description:
-//      This file provides the main method for the binaries for partitioning and sorting.  A preprocessor flag is used
-//      to compile as partitioning or sorting binary.
+//      This file provides the main method for sorting.  A preprocessor flag is used to compile as partitioning or
+//      sorting binary.
 //
 //======================================================================================================================
 
@@ -29,13 +29,10 @@
 #endif
 
 
-#include "radix_partition.hpp"
 #include "sort.hpp"
 #include <cstddef>
 #include <cstdlib>
-#include <err.h>
 #include <iostream>
-#include <sys/mman.h>
 
 
 int main(int argc, const char **argv)
@@ -48,17 +45,7 @@ int main(int argc, const char **argv)
     /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
 
-    /* Try to lock all current and future pages in physical RAM. */
-    int mlock_status = mlockall(MCL_CURRENT | MCL_FUTURE);
-    if (mlock_status)
-        warn("Unable to lock all current and future pages into physical RAM");
-
-    //METHOD(argv[1], argv[2]);
-
-    if (mlock_status == 0) {
-        if (munlockall())
-            warn("Unable to unlock all pages");
-    }
+    METHOD(argv[1], argv[2]);
 
     std::exit(EXIT_SUCCESS);
 }
