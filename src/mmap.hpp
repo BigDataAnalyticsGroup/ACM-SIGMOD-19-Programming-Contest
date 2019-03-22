@@ -66,6 +66,9 @@ struct MMapFile
     /** Return the size in bytes of the mapped file. */
     std::size_t size() const { return size_; }
 
+    /* Announce an intention to access file data in a specific pattern. */
+    void advise(int advice) { posix_fadvise(fd_, 0, size_, advice); }
+
     const char * const filename;
     private:
     void *addr_;
