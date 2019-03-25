@@ -50,9 +50,15 @@ int main(int argc, const char **argv)
 #if METHOD == 1
         hist_from_file_mmap(argv[1]);
 #elif METHOD == 2
-        hist_from_file_mmap_MT(argv[1], 6);
+#ifndef THREADS
+#error "To use this methods you must define THREADS"
+#endif
+        hist_from_file_mmap_MT(argv[1], THREADS);
 #elif METHOD == 3
-        hist_from_file_mmap_MT(argv[1], 10);
+#ifndef THREADS
+#error "To use this methods you must define THREADS"
+#endif
+        hist_from_file_buffered_custom_MT(argv[1], THREADS);
 #elif METHOD == 4
         hist_from_file_direct(argv[1]); // does not work if file, buffer, and stride are not properly aligned
 #elif METHOD == 5
@@ -61,8 +67,6 @@ int main(int argc, const char **argv)
         hist_from_file_buffered_default(argv[1]);
 #elif METHOD == 7
         hist_from_file_buffered_custom(argv[1]);
-#elif METHOD == 8
-        hist_from_file_buffered_custom_MT(argv[1], 6);
 #else
 #error "Invalid METHOD"
 #endif

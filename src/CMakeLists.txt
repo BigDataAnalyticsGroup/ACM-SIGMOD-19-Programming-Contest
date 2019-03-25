@@ -12,11 +12,27 @@ target_compile_definitions(hist_mmap PRIVATE METHOD=1)
 
 add_executable(hist_mmap_MT6 hist_main.cpp)
 target_link_libraries(hist_mmap_MT6 contest ${CMAKE_THREAD_LIBS_INIT})
-target_compile_definitions(hist_mmap_MT6 PRIVATE METHOD=2)
+target_compile_definitions(hist_mmap_MT6 PRIVATE METHOD=2 THREADS=6)
 
 add_executable(hist_mmap_MT10 hist_main.cpp)
 target_link_libraries(hist_mmap_MT10 contest ${CMAKE_THREAD_LIBS_INIT})
-target_compile_definitions(hist_mmap_MT10 PRIVATE METHOD=3)
+target_compile_definitions(hist_mmap_MT10 PRIVATE METHOD=2 THREADS=10)
+
+add_executable(hist_mmap_MT16 hist_main.cpp)
+target_link_libraries(hist_mmap_MT16 contest ${CMAKE_THREAD_LIBS_INIT})
+target_compile_definitions(hist_mmap_MT16 PRIVATE METHOD=2 THREADS=16)
+
+add_executable(hist_buffered_custom_MT6 hist_main.cpp)
+target_link_libraries(hist_buffered_custom_MT6 contest ${CMAKE_THREAD_LIBS_INIT})
+target_compile_definitions(hist_buffered_custom_MT6 PRIVATE METHOD=3 THREADS=6)
+
+add_executable(hist_buffered_custom_MT10 hist_main.cpp)
+target_link_libraries(hist_buffered_custom_MT10 contest ${CMAKE_THREAD_LIBS_INIT})
+target_compile_definitions(hist_buffered_custom_MT10 PRIVATE METHOD=3 THREADS=10)
+
+add_executable(hist_buffered_custom_MT16 hist_main.cpp)
+target_link_libraries(hist_buffered_custom_MT16 contest ${CMAKE_THREAD_LIBS_INIT})
+target_compile_definitions(hist_buffered_custom_MT16 PRIVATE METHOD=3 THREADS=16)
 
 #[[ not portable; does not work if file, buffer, and stride are not properly aligned
 add_executable(hist_direct hist_main.cpp)
@@ -41,10 +57,6 @@ add_executable(hist_buffered_custom hist_main.cpp)
 target_link_libraries(hist_buffered_custom contest ${CMAKE_THREAD_LIBS_INIT})
 target_compile_definitions(hist_buffered_custom PRIVATE METHOD=7)
 ]]
-
-add_executable(hist_buffered_custom_MT6 hist_main.cpp)
-target_link_libraries(hist_buffered_custom_MT6 contest ${CMAKE_THREAD_LIBS_INIT})
-target_compile_definitions(hist_buffered_custom_MT6 PRIVATE METHOD=8)
 
 add_executable(radix radix_main.cpp)
 target_link_libraries(radix contest ${CMAKE_THREAD_LIBS_INIT})
