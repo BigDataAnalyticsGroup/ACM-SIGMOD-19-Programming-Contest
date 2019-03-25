@@ -59,3 +59,5 @@ histogram_t hist_from_file_unbuffered(const char *filename);
 histogram_t hist_from_file_buffered_default(const char *filename);
 
 histogram_t hist_from_file_buffered_custom(const char *filename);
+
+histogram_t hist_from_file_buffered_custom_MT(const char *filename, const unsigned num_threads);

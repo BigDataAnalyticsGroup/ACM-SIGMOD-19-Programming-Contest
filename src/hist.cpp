@@ -27,6 +27,7 @@
 #include "mmap.hpp"
 #include "record.hpp"
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <err.h>
@@ -103,7 +104,7 @@ histogram_t hist_MT(const record *begin, const record *end, const unsigned num_t
         threads[tid] = std::thread(compute_hist, &local_hists[tid], begin + partition_begin, begin + partition_end);
         partition_begin = partition_end;
     }
-    new (&threads[num_threads - 1]) std::thread(compute_hist, &local_hists[num_threads - 1], begin + partition_begin, end);
+    threads[num_threads - 1] = std::thread(compute_hist, &local_hists[num_threads - 1], begin + partition_begin, end);
 
     /* Summarize the local histograms in a global histogram. */
     histogram_t the_histogram{ {0} };
@@ -231,4 +232,68 @@ histogram_t hist_from_file_buffered_custom(const char *filename)
     free(fbuffer);
     fclose(file);
     return histogram;
+}
+
+histogram_t hist_from_file_buffered_custom_MT(const char *filename, const unsigned num_threads)
+{
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1)
+        err(EXIT_FAILURE, "Could not open file '%s'", filename);
+
+    struct stat statbuf;
+    if (fstat(fd, &statbuf))
+        err(EXIT_FAILURE, "Could not get status of file '%s'", filename);
+    close(fd);
+    const std::size_t size_in_bytes = statbuf.st_size;
+    const std::size_t num_records = size_in_bytes / sizeof(record);
+
+    /* Lambda to compute the histogram of a range. */
+    auto compute_hist = [filename](histogram_t *histogram, const std::size_t offset, const std::size_t count) {
+        constexpr std::size_t BUFFER_SIZE = 64 * BLOCK_SIZE;
+        FILE *file = fopen(filename, "r"); // do not close
+        if (not file)
+            err(EXIT_FAILURE, "Failed to create stream for file '%s'", filename);
+        char *fbuffer = reinterpret_cast<char*>(std::aligned_alloc(BLOCK_SIZE, BUFFER_SIZE));
+        setvbuf(file, fbuffer, _IOFBF, BUFFER_SIZE);
+        fseek(file, offset, SEEK_SET);
+
+        record buffer;
+        for (std::size_t i = 0; i != count; ++i) {
+            if (fread(&buffer, sizeof(buffer), 1, file) != 1)
+                err(EXIT_FAILURE, "Failed to read from file");
+            ++(*histogram)[buffer.get_radix_bits()];
+        }
+        assert(histogram->count() == count);
+
+        free(fbuffer);
+        fclose(file);
+    };
+
+    /* Divide the input into chunks and allocate a histogram per chunk. */
+    histogram_t *local_hists = new histogram_t[num_threads]{ {{{0}}} };
+    std::thread *threads = new std::thread[num_threads];
+
+    /* Spawn a thread per chunk to compute the local histogram. */
+    const std::size_t step_size = std::ceil(double(num_records) / num_threads);
+    for (unsigned tid = 0; tid != num_threads; ++tid) {
+        const auto offset = tid * step_size * sizeof(record);
+        assert(offset < size_in_bytes and "offset out of bounds");
+        const auto count = std::min(step_size, (size_in_bytes - offset) / sizeof(record));
+        assert(count <= step_size and "count out of bounds");
+        assert(offset + count * sizeof(record) <= size_in_bytes and "offset + count out of bounds");
+        threads[tid] = std::thread(compute_hist, &local_hists[tid], offset, count);
+    }
+
+    /* Summarize the local histograms in a global histogram. */
+    histogram_t the_histogram{ {0} };
+    for (unsigned tid = 0; tid != num_threads; ++tid) {
+        threads[tid].join();
+        for (std::size_t i = 0; i != NUM_PARTITIONS; ++i)
+            the_histogram[i] += local_hists[tid][i];
+    }
+    assert(the_histogram.count() == num_records);
+
+    delete []local_hists;
+    delete []threads;
+    return the_histogram;
 }

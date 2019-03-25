@@ -54,13 +54,17 @@ int main(int argc, const char **argv)
 #elif METHOD == 3
         hist_from_file_mmap_MT(argv[1], 10);
 #elif METHOD == 4
-        hist_from_file_direct(argv[1]);
+        hist_from_file_direct(argv[1]); // does not work if file, buffer, and stride are not properly aligned
 #elif METHOD == 5
         hist_from_file_unbuffered(argv[1]);
 #elif METHOD == 6
         hist_from_file_buffered_default(argv[1]);
 #elif METHOD == 7
         hist_from_file_buffered_custom(argv[1]);
+#elif METHOD == 8
+        hist_from_file_buffered_custom_MT(argv[1], 6);
+#else
+#error "Invalid METHOD"
 #endif
     std::cout << "count: " << histogram.count() << "    checksum: " << std::hex << histogram.checksum() << std::endl;
 }
