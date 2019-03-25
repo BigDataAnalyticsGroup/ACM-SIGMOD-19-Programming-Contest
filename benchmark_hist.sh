@@ -1,5 +1,6 @@
 #!/bin/zsh
 
+NUM_RUNS=3
 BIN_DIR="build/release/bin"
 FILE="resource/20G.bin"
 
@@ -12,7 +13,7 @@ then
     exit 1;
 fi
 
-for i in {1..5};
+for i in {1..$NUM_RUNS};
 do
     echo 1 | sudo tee "/proc/sys/vm/drop_caches" > /dev/null;
     time "$BIN" "$FILE";
