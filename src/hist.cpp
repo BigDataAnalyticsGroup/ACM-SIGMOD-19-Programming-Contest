@@ -155,7 +155,7 @@ histogram_t hist_from_file_direct(const char *filename)
     if (posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL))
         warn("fadvise() failed");
 
-    void *buffer = std::aligned_alloc(BLOCK_SIZE, BLOCK_SIZE);
+    void *buffer = aligned_alloc(BLOCK_SIZE, BLOCK_SIZE);
     while (int ret = read(fd, buffer, BLOCK_SIZE)) {
         if (ret == -1)
             err(EXIT_FAILURE, "Failed to read from file '%s'", filename);
@@ -222,7 +222,7 @@ histogram_t hist_from_file_buffered_custom(const char *filename)
         warn("fadvise() failed");
 
     constexpr std::size_t BUFFER_SIZE = 64 * BLOCK_SIZE;
-    char *fbuffer = reinterpret_cast<char*>(std::aligned_alloc(BLOCK_SIZE, BUFFER_SIZE));
+    char *fbuffer = reinterpret_cast<char*>(aligned_alloc(BLOCK_SIZE, BUFFER_SIZE));
     setvbuf(file, fbuffer, _IOFBF, BUFFER_SIZE);
 
     record buffer;
@@ -253,7 +253,7 @@ histogram_t hist_from_file_buffered_custom_MT(const char *filename, const unsign
         FILE *file = fopen(filename, "r"); // do not close
         if (not file)
             err(EXIT_FAILURE, "Failed to create stream for file '%s'", filename);
-        char *fbuffer = reinterpret_cast<char*>(std::aligned_alloc(BLOCK_SIZE, BUFFER_SIZE));
+        char *fbuffer = reinterpret_cast<char*>(aligned_alloc(BLOCK_SIZE, BUFFER_SIZE));
         setvbuf(file, fbuffer, _IOFBF, BUFFER_SIZE);
         fseek(file, offset, SEEK_SET);
 
