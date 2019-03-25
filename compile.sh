@@ -11,6 +11,6 @@ fi
 
 mkdir -p "$BUILD_DIR";
 cd "$BUILD_DIR";
-cmake -G "$BUILD_TOOL" -DCMAKE_BUILD_TYPE="Release" "$PROJ_DIR"
+cmake -G "$BUILD_TOOL" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE="Release" "$PROJ_DIR"
 make -j5
 cd "$PROJ_DIR"
