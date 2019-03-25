@@ -1,12 +1,14 @@
 #!/bin/zsh
 
 NUM_RUNS=3
-BIN_DIR="build/release/bin"
-FILE="resource/5G.bin"
+BUILD_DIR=$1
+FILE=$2
+BIN_DIR="$BUILD_DIR/bin"
 
 function benchmark
 {
     BIN=$1
+    FILE=$2
     echo "$BIN"
     if [ ! -f "$BIN" ];
     then
@@ -28,7 +30,18 @@ function benchmark
     echo 1 | sudo tee "/proc/sys/vm/drop_caches" > /dev/null;
 }
 
+if [ ! -d "$BIN_DIR" ];
+then
+    >&2 echo "$BIN_DIR does not exist."
+    exit 1
+fi
+
+if [ ! -f "$FILE" ];
+then
+    >&2 echo "Input file $FILE does not exist."
+fi
+
 for BIN in "$BIN_DIR/hist_"*;
 do
-    benchmark "$BIN";
+    benchmark "$BIN" "$FILE";
 done
