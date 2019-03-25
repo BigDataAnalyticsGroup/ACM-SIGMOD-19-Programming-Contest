@@ -24,14 +24,12 @@
 //======================================================================================================================
 
 
-#ifndef METHOD
-#error "Define METHOD before compiling."
-#endif
-
-
-#include "sort.hpp"
+#include "mmap.hpp"
+#include "record.hpp"
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 
@@ -45,7 +43,14 @@ int main(int argc, const char **argv)
     /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
 
-    METHOD(argv[1], argv[2]);
+    MMapFile in(argv[1]);
+    record *data = reinterpret_cast<record*>(in.addr());
+    const std::size_t num_records = in.size() / sizeof(record);
+
+    std::sort(data, data + num_records);
+
+    std::ofstream out(argv[2]);
+    out.write(reinterpret_cast<char*>(data), in.size());
 
     std::exit(EXIT_SUCCESS);
 }

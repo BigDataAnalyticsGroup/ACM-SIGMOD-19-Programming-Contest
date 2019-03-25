@@ -2,6 +2,7 @@ add_library(
     contest
     hist.cpp
     radix.cpp
+    sort.cpp
     )
 
 #[[ too slow
@@ -58,5 +59,6 @@ target_link_libraries(hist_buffered_custom contest ${CMAKE_THREAD_LIBS_INIT})
 target_compile_definitions(hist_buffered_custom PRIVATE METHOD=7)
 ]]
 
-add_executable(radix radix_main.cpp)
-target_link_libraries(radix contest ${CMAKE_THREAD_LIBS_INIT})
+
+add_executable(sort sort_main.cpp)
+target_link_libraries(sort contest ${CMAKE_THREAD_LIBS_INIT})
