@@ -24,9 +24,11 @@
 
 #pragma once
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 
 
 constexpr unsigned NUM_RADIX_BITS = 8;
@@ -34,15 +36,30 @@ constexpr unsigned NUM_PARTITIONS = 1 << NUM_RADIX_BITS;
 
 struct __attribute__((packed)) record
 {
-    uint8_t key[10];
-    uint8_t payload[90];
+    std::array<uint8_t, 10> key;
+    std::array<uint8_t, 90> payload;
 
     /** Extracts the NUM_RADIX_BITS most significant bits from the key and places them in the lowest bits of the result.
      * All other bits are set to 0. */
     uint8_t get_radix_bits() const { return key[0]; }
 
-    bool operator<(const record &other) const { return memcmp(this->key, other.key, 10) < 0; }
-    bool operator==(const record &other) const { return memcmp(this->key, other.key, 10) == 0; }
+    bool operator<(const record &other) const { return this->key < other.key; }
+    bool operator==(const record &other) const { return this->key == other.key; }
     bool operator!=(const record &other) const { return not operator==(other); }
+
+    friend std::ostream & operator<<(std::ostream &out, const record &r);
 };
 static_assert(sizeof(record) == 100, "incorrect record size");
+
+struct record_key
+{
+    std::array<uint8_t, 10> key;
+
+    bool operator<(const record &other) const { return this->key < other.key; }
+    bool operator==(const record &other) const { return this->key == other.key; }
+    bool operator!=(const record &other) const { return not operator==(other); }
+
+    std::array<uint8_t, 90> generate_payload_from_key() const;
+
+    friend std::ostream & operator<<(std::ostream &out, const record &r);
+};

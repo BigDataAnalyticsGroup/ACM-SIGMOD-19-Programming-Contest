@@ -2,6 +2,8 @@ add_library(
     contest
     hist.cpp
     radix.cpp
+    rand16.cpp
+    record.cpp
     sort.cpp
     )
 
@@ -62,3 +64,6 @@ target_compile_definitions(hist_buffered_custom PRIVATE METHOD=7)
 
 add_executable(sort sort_main.cpp)
 target_link_libraries(sort contest ${CMAKE_THREAD_LIBS_INIT})
+
+add_executable(compress compress_main.cpp)
+target_link_libraries(compress contest ${CMAKE_THREAD_LIBS_INIT})
