@@ -27,11 +27,75 @@
 #include "mmap.hpp"
 #include "record.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <err.h>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <thread>
+#include <unistd.h>
 
+
+constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
+constexpr unsigned NUM_THREADS = 16;
+constexpr std::size_t SECTOR_SIZE = 512; // byte
+constexpr std::size_t STREAM_BUFFER_SIZE = 1024 * SECTOR_SIZE;
+
+
+uint8_t k0;
+
+
+/** Information for the threads. */
+struct thread_info
+{
+    unsigned tid; ///< id of this thread
+    const char *path; ///< the file to read from
+    std::size_t offset; ///< offset in records from start of the file
+    std::size_t num_records; ///< number of records to read from file
+    record *dst; ///< destination array of records
+};
+
+/** Load a part of a file into a destination memory location. */
+void load(thread_info *ti)
+{
+    /* Allocate stream buffer. */
+    char *streambuf = reinterpret_cast<char*>(malloc(STREAM_BUFFER_SIZE));
+    if (not streambuf) {
+        warn("Failed to allocate stream buffer");
+        return;
+    }
+
+    /* Open input file for reading. */
+    FILE *file = fopen(ti->path, "rb");
+    if (not file) {
+        warn("Could not open file '%s'", ti->path);
+        return;
+    }
+
+    /* Switch to custom stream buffer. */
+    if (setvbuf(file, streambuf, _IOFBF, STREAM_BUFFER_SIZE))
+        warn("Failed to set custom stream buffer");
+
+    /* Seek to offset. */
+    if (fseek(file, ti->offset * sizeof(record), SEEK_SET)) {
+        warn("Failed to seek to offset %lu in file '%s'", ti->offset, ti->path);
+        return;
+    }
+
+    for (std::size_t i = 0; i != ti->num_records; ++i) {
+        if (fread(&ti->dst[i], sizeof(record), 1, file) != 1) {
+            warn("Failed to read %luth record from file '%s' starting at offset %lu", i, ti->path, ti->offset);
+            return;
+        }
+    }
+
+    free(streambuf);
+    fclose(file);
+}
 
 int main(int argc, const char **argv)
 {
@@ -43,14 +107,65 @@ int main(int argc, const char **argv)
     /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
 
-    MMapFile in(argv[1]);
-    record *data = reinterpret_cast<record*>(in.addr());
-    const std::size_t num_records = in.size() / sizeof(record);
+    /* Get input file size. */
+    int fd_in = open(argv[1], O_RDONLY);
+    if (fd_in == -1)
+        err(EXIT_FAILURE, "Could not open file '%s'", argv[1]);
+    struct stat statbuf;
+    if (fstat(fd_in, &statbuf))
+        err(EXIT_FAILURE, "Could not get status of file '%s'", argv[1]);
+    close(fd_in);
+    const std::size_t size_in_bytes = statbuf.st_size;
+    const std::size_t num_records = size_in_bytes / sizeof(record);
 
-    std::sort(data, data + num_records);
+    /* Open output file for writing. */
+    FILE *out = fopen(argv[2], "wb");
+    if (not out)
+        err(EXIT_FAILURE, "Could not create or open file '%s' for writing", argv[2]);
 
-    std::ofstream out(argv[2]);
-    out.write(reinterpret_cast<char*>(data), in.size());
+    if (size_in_bytes < IN_MEMORY_THRESHOLD) {
+        std::cerr << "Load entire file into main memory.\n";
+
+        /* Allocate memory for the file. */
+        record *records = reinterpret_cast<record*>(malloc(num_records * sizeof(record)));
+
+        /* Spawn threads to load file. */
+        std::array<std::thread, NUM_THREADS> threads;
+        std::array<thread_info, NUM_THREADS> thread_infos;
+        const std::size_t num_records_per_thread = num_records / NUM_THREADS;
+        for (unsigned tid = 0; tid != NUM_THREADS; ++tid) {
+            auto &ti = thread_infos[tid];
+            ti.tid = tid;
+            ti.path = argv[1];
+            ti.offset = tid * num_records_per_thread;
+            ti.num_records = tid == NUM_THREADS - 1 ? num_records - ti.offset : num_records_per_thread;
+            ti.dst = records + ti.offset;
+            std::cerr << "Thread " << ti.tid << ": Load " << ti.path << " at offset " << ti.offset << " for "
+                      << ti.num_records << " records to location " << ti.dst << '\n';
+            threads[tid] = std::thread(load, &thread_infos[tid]);
+        }
+
+        /* Join threads. */
+        for (auto &t : threads) {
+            if (t.joinable())
+                t.join();
+        }
+
+        /* Sort the records. */
+        std::sort(records, records + num_records);
+
+        /* Write the sorted data to the output file. */
+        if (fwrite(records, sizeof(record), num_records, out) != num_records)
+            warn("Error during writing the sorted records");
+        if (fflush(out))
+            warn("Failed to flush output file '%s'", argv[2]);
+        if (fclose(out))
+            warn("Failed to close output file '%s'", argv[2]);
+    } else {
+        /* TODO Not yet implemented */
+        std::abort();
+    }
+
 
     std::exit(EXIT_SUCCESS);
 }
