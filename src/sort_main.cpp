@@ -27,6 +27,7 @@
 #include "mmap.hpp"
 #include "record.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -38,6 +39,9 @@
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+
+
+namespace ch = std::chrono;
 
 
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
@@ -124,6 +128,7 @@ int main(int argc, const char **argv)
         err(EXIT_FAILURE, "Could not create or open file '%s' for writing", argv[2]);
 
     if (size_in_bytes < IN_MEMORY_THRESHOLD) {
+        const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Load entire file into main memory.\n";
 
         /* Allocate memory for the file. */
@@ -151,8 +156,12 @@ int main(int argc, const char **argv)
                 t.join();
         }
 
+        const auto t_begin_sort = ch::high_resolution_clock::now();
+
         /* Sort the records. */
         std::sort(records, records + num_records);
+
+        const auto t_begin_write = ch::high_resolution_clock::now();
 
         /* Write the sorted data to the output file. */
         if (fwrite(records, sizeof(record), num_records, out) != num_records)
@@ -161,6 +170,25 @@ int main(int argc, const char **argv)
             warn("Failed to flush output file '%s'", argv[2]);
         if (fclose(out))
             warn("Failed to close output file '%s'", argv[2]);
+
+        const auto t_finish = ch::high_resolution_clock::now();
+
+        /* Report times and throughput. */
+        {
+            constexpr unsigned long MiB = 1024 * 1024;
+
+            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
+            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_sort).count() / 1e3;
+            const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
+
+            const auto throughput_read_mbs = size_in_bytes / MiB / d_read_s;
+            const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
+            const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
+
+            std::cerr << "read: " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
+                      << "sort: " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
+                      << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
+        }
     } else {
         /* TODO Not yet implemented */
         std::abort();
