@@ -7,6 +7,9 @@ add_library(
     sort.cpp
     )
 
+add_executable(read_write read_write.cpp)
+target_link_libraries(read_write contest ${CMAKE_THREAD_LIBS_INIT})
+
 #[[ too slow
 add_executable(hist_mmap hist_main.cpp)
 target_link_libraries(hist_mmap contest ${CMAKE_THREAD_LIBS_INIT})

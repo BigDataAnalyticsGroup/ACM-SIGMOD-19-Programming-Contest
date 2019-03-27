@@ -1,4 +1,4 @@
-//===== main.cpp =======================================================================================================
+//===== read_write.cpp =================================================================================================
 //
 //  Author: Immanuel Haffner <haffner.immanuel@gmail.com>
 //
@@ -18,30 +18,23 @@
 //      limitations under the License.
 //
 //  Description:
-//      This file provides the main method for sorting.  A preprocessor flag is used to compile as partitioning or
-//      sorting binary.
+//      This is a micro benchmark to measure I/O times.
 //
 //======================================================================================================================
 
 
-#include "mmap.hpp"
 #include "record.hpp"
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <err.h>
 #include <fcntl.h>
-#include <fstream>
 #include <iostream>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
-
-
-#define CONCURRENT_WRITE 1
 
 
 namespace ch = std::chrono;
@@ -63,8 +56,7 @@ struct thread_info
     const char *path; ///< the path to the file to read from / write to
     std::size_t offset; ///< offset in records from start of the file
     std::size_t num_records; ///< number of records to read from / wrtie to file
-    record *records; ///< points to the location of the records
-    int fd_out; ///< file descriptor of the output file
+    record *records; ///< array of records
 };
 
 /** Load a part of a file into a destination memory location. */
@@ -94,10 +86,19 @@ void partial_read(const thread_info *ti)
         return;
     }
 
+#if 0
+    for (std::size_t i = 0; i != ti->num_records; ++i) {
+        if (fread(&ti->records[i], sizeof(record), 1, file) != 1) {
+            warn("Failed to read %luth record from file '%s' starting at offset %lu", i, ti->path, ti->offset);
+            return;
+        }
+    }
+#else
     if (fread(ti->records, sizeof(record), ti->num_records, file) != ti->num_records) {
         warn("Failed to read %lu records from file '%s' starting at offset %lu", ti->num_records, ti->path, ti->offset);
         return;
     }
+#endif
 
     free(streambuf);
     fclose(file);
@@ -106,15 +107,46 @@ void partial_read(const thread_info *ti)
 /** Write a part of the sorted data to the output file. */
 void partial_write(const thread_info *ti)
 {
-    /* Verify data is sorted. */
-    assert(std::is_sorted(ti->records, ti->records + ti->num_records));
-
-    ssize_t size = ti->num_records * sizeof(record);
-    off_t offset = ti->offset * sizeof(record);
-    if (pwrite(ti->fd_out, ti->records, size, offset) != size) {
-        warn("Failed to write %lu records to file '%s' starting at offset %lu", ti->num_records, ti->path, ti->offset);
+    /* Allocate stream buffer. */
+    char *streambuf = reinterpret_cast<char*>(malloc(STREAM_BUFFER_SIZE));
+    if (not streambuf) {
+        warn("Failed to allocate stream buffer");
         return;
     }
+
+    /* Open output file for writing. */
+    FILE *file = fopen(ti->path, "wb");
+    if (not file) {
+        warn("Could not open file '%s'", ti->path);
+        return;
+    }
+
+    /* Switch to custom stream buffer. */
+    if (setvbuf(file, streambuf, _IOFBF, STREAM_BUFFER_SIZE))
+        warn("Failed to set custom stream buffer");
+
+    /* Seek to offset. */
+    if (fseek(file, ti->offset * sizeof(record), SEEK_SET)) {
+        warn("Failed to seek to offset %lu in file '%s'", ti->offset, ti->path);
+        return;
+    }
+
+#if 1
+    for (std::size_t i = 0; i != ti->num_records; ++i) {
+        if (fwrite(&ti->records[i], sizeof(record), 1, file) != 1) {
+            warn("Failed to read %luth record from file '%s' starting at offset %lu", i, ti->path, ti->offset);
+            return;
+        }
+    }
+#else
+    if (fwrite(ti->records, sizeof(record), ti->num_records, file) != ti->num_records) {
+        warn("Failed to read %luth record from file '%s' starting at offset %lu", ti->num_records, ti->path, ti->offset);
+        return;
+    }
+#endif
+
+    free(streambuf);
+    fclose(file);
 }
 
 int main(int argc, const char **argv)
@@ -145,7 +177,7 @@ int main(int argc, const char **argv)
         /* Allocate memory for the file. */
         record *records = reinterpret_cast<record*>(malloc(num_records * sizeof(record)));
 
-        /* Spawn threads to cooncurrently read file. */
+        /* Spawn threads to read file. */
         std::array<std::thread, NUM_THREADS> threads;
         std::array<thread_info, NUM_THREADS> thread_infos;
         const std::size_t num_records_per_thread = num_records / NUM_THREADS;
@@ -167,30 +199,13 @@ int main(int argc, const char **argv)
                 t.join();
         }
 
-        const auto t_begin_sort = ch::high_resolution_clock::now();
-
-        /* Sort the records. */
-        std::cerr << "Sort the data.\n";
-        std::sort(records, records + num_records);
-        assert(std::is_sorted(records, records + num_records));
-
         const auto t_begin_write = ch::high_resolution_clock::now();
 
         /* Write the sorted data to the output file. */
-        std::cerr << "Write sorted data back to disk.\n";
-#if CONCURRENT_WRITE
-        /* Open output file. */
-        int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_WRONLY, 0644);
-        if (fd_out == -1)
-            err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
-        if (ftruncate(fd_out, size_in_bytes))
-            err(EXIT_FAILURE, "Could not truncate file '%s' to size '%lu'", argv[2], size_in_bytes);
-
-        /* Spawn threads to concurrently write file. */
+        std::cerr << "Write entire file back to disk.\n";
         for (unsigned tid = 0; tid != NUM_THREADS; ++tid) {
             auto &ti = thread_infos[tid];
             ti.path = argv[2];
-            ti.fd_out = fd_out;
             std::cerr << "Thread " << ti.tid << ": Write " << ti.path << " at offset " << ti.offset << " for "
                       << ti.num_records << " records from location " << ti.records << '\n';
             threads[tid] = std::thread(partial_write, &thread_infos[tid]);
@@ -202,49 +217,26 @@ int main(int argc, const char **argv)
                 t.join();
         }
 
-        /* Release resources. */
-        fsync(fd_out);
-        close(fd_out);
-#else
-        /* Open output file. */
-        FILE *out = fopen(argv[2], "wb");
-        if (not out)
-            err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
-        char *streambuf = reinterpret_cast<char*>(malloc(STREAM_BUFFER_SIZE));
-        if (setvbuf(out, streambuf, _IOFBF, STREAM_BUFFER_SIZE))
-            warn("Failed to set custom stream buffer");
-
-        if (fwrite(records, 1, size_in_bytes, out) != size_in_bytes)
-            warn("Failed to write to output file '%s'", argv[2]);
-
-        /* Release resources. */
-        fflush(out);
-        free(streambuf);
-        fclose(out);
-#endif
-
         const auto t_finish = ch::high_resolution_clock::now();
 
         /* Report times and throughput. */
         {
             constexpr unsigned long MiB = 1024 * 1024;
 
-            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
-            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_sort).count() / 1e3;
+            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_read).count() / 1e3;
             const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
 
             const auto throughput_read_mbs = size_in_bytes / MiB / d_read_s;
-            const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
             const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
 
-            std::cerr << "read: " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
-                      << "sort: " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
+            std::cout << "read: " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
                       << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
     } else {
         /* TODO Not yet implemented */
         std::abort();
     }
+
 
     std::exit(EXIT_SUCCESS);
 }
