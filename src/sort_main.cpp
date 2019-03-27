@@ -48,7 +48,8 @@ namespace ch = std::chrono;
 
 
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
-constexpr unsigned NUM_THREADS = 16;
+constexpr unsigned NUM_THREADS_READ = 16;
+constexpr unsigned NUM_THREADS_WRITE = 8;
 constexpr std::size_t SECTOR_SIZE = 512; // byte
 constexpr std::size_t STREAM_BUFFER_SIZE = 1024 * SECTOR_SIZE;
 
@@ -146,25 +147,27 @@ int main(int argc, const char **argv)
         record *records = reinterpret_cast<record*>(malloc(num_records * sizeof(record)));
 
         /* Spawn threads to cooncurrently read file. */
-        std::array<std::thread, NUM_THREADS> threads;
-        std::array<thread_info, NUM_THREADS> thread_infos;
-        const std::size_t num_records_per_thread = num_records / NUM_THREADS;
-        for (unsigned tid = 0; tid != NUM_THREADS; ++tid) {
-            auto &ti = thread_infos[tid];
-            ti.tid = tid;
-            ti.path = argv[1];
-            ti.offset = tid * num_records_per_thread;
-            ti.num_records = tid == NUM_THREADS - 1 ? num_records - ti.offset : num_records_per_thread;
-            ti.records = records + ti.offset;
-            std::cerr << "Thread " << ti.tid << ": Read " << ti.path << " at offset " << ti.offset << " for "
-                      << ti.num_records << " records to location " << ti.records << '\n';
-            threads[tid] = std::thread(partial_read, &thread_infos[tid]);
-        }
+        {
+            std::array<std::thread, NUM_THREADS_READ> threads;
+            std::array<thread_info, NUM_THREADS_READ> thread_infos;
+            const std::size_t num_records_per_thread = num_records / NUM_THREADS_READ;
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
+                auto &ti = thread_infos[tid];
+                ti.tid = tid;
+                ti.path = argv[1];
+                ti.offset = tid * num_records_per_thread;
+                ti.num_records = tid == NUM_THREADS_READ - 1 ? num_records - ti.offset : num_records_per_thread;
+                ti.records = records + ti.offset;
+                std::cerr << "Thread " << ti.tid << ": Read " << ti.path << " at offset " << ti.offset << " for "
+                    << ti.num_records << " records to location " << ti.records << '\n';
+                threads[tid] = std::thread(partial_read, &thread_infos[tid]);
+            }
 
-        /* Join threads. */
-        for (auto &t : threads) {
-            if (t.joinable())
-                t.join();
+            /* Join threads. */
+            for (auto &t : threads) {
+                if (t.joinable())
+                    t.join();
+            }
         }
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
@@ -187,19 +190,28 @@ int main(int argc, const char **argv)
             err(EXIT_FAILURE, "Could not truncate file '%s' to size '%lu'", argv[2], size_in_bytes);
 
         /* Spawn threads to concurrently write file. */
-        for (unsigned tid = 0; tid != NUM_THREADS; ++tid) {
-            auto &ti = thread_infos[tid];
-            ti.path = argv[2];
-            ti.fd_out = fd_out;
-            std::cerr << "Thread " << ti.tid << ": Write " << ti.path << " at offset " << ti.offset << " for "
-                      << ti.num_records << " records from location " << ti.records << '\n';
-            threads[tid] = std::thread(partial_write, &thread_infos[tid]);
-        }
+        {
+            std::array<std::thread, NUM_THREADS_WRITE> threads;
+            std::array<thread_info, NUM_THREADS_WRITE> thread_infos;
+            const std::size_t num_records_per_thread = num_records / NUM_THREADS_WRITE;
+            for (unsigned tid = 0; tid != NUM_THREADS_WRITE; ++tid) {
+                auto &ti = thread_infos[tid];
+                ti.tid = tid;
+                ti.path = argv[2];
+                ti.offset = tid * num_records_per_thread;
+                ti.num_records = tid == NUM_THREADS_WRITE - 1 ? num_records - ti.offset : num_records_per_thread;
+                ti.records = records + ti.offset;
+                ti.fd_out = fd_out;
+                std::cerr << "Thread " << ti.tid << ": Write " << ti.path << " at offset " << ti.offset << " for "
+                    << ti.num_records << " records from location " << ti.records << '\n';
+                threads[tid] = std::thread(partial_write, &thread_infos[tid]);
+            }
 
-        /* Join threads. */
-        for (auto &t : threads) {
-            if (t.joinable())
-                t.join();
+            /* Join threads. */
+            for (auto &t : threads) {
+                if (t.joinable())
+                    t.join();
+            }
         }
 
         /* Release resources. */
