@@ -36,6 +36,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <thread>
@@ -154,7 +155,7 @@ int main(int argc, const char **argv)
               << " bytes per slab and I/O.  " << num_slabs << " slabs in total.\n";
 
     /* Open output file and allocate sufficient space. */
-    int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_WRONLY, 0644);
+    int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_RDWR, 0644);
     if (fd_out == -1)
         err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
     if (fallocate(fd_out, /* mode = */ 0, /* offset= */ 0, /* len= */ stat_in.st_size)) {
@@ -171,8 +172,15 @@ int main(int argc, const char **argv)
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read entire file into main memory.\n";
 
-        /* Allocate sufficient memory to read the input file. */
-        void *buffer = aligned_alloc(slab_size, stat_in.st_size);
+        /* MMap the output file. */
+        void *buffer = mmap(/* addr=   */ nullptr,
+                            /* length= */ stat_in.st_size,
+                            /* prot=   */ PROT_READ|PROT_WRITE,
+                            /* flags=  */ MAP_SHARED,
+                            /* fd=     */ fd_out,
+                            /* offset= */ 0);
+        if (buffer == MAP_FAILED)
+            err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
 
         std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size at address " << buffer << '\n';
 
@@ -220,53 +228,8 @@ int main(int argc, const char **argv)
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
-#if CONCURRENT_WRITE
-        /* Spawn threads to concurrently write file. */
-        {
-            std::array<std::thread, NUM_THREADS_WRITE> threads;
-            std::array<thread_info, NUM_THREADS_WRITE> thread_infos;
-            const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
-            const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
-            for (unsigned tid = 0; tid != NUM_THREADS_WRITE; ++tid) {
-                const std::size_t offset = tid * count_per_thread;
-                const std::size_t count = tid == NUM_THREADS_READ - 1 ? stat_in.st_size - offset : count_per_thread;
-                std::cerr << "Thread " << tid << " writes \"" << argv[2] << "\" at offset " << offset << " for "
-                          << count << " bytes.\n";
-                thread_infos[tid] = thread_info {
-                    .tid = tid,
-                    .fd = fd_out,
-                    .path = argv[2],
-                    .offset = tid * count_per_thread,
-                    .count = count,
-                    .buffer = buffer,
-                    .slab_size = slab_size,
-                };
-                threads[tid] = std::thread(partial_write, &thread_infos[tid]);
-            }
-
-            /* Join threads. */
-            for (auto &t : threads) {
-                if (t.joinable())
-                    t.join();
-            }
-        }
-
-#else
-        /* Sequentially write file. */
-        {
-            uint8_t *src = reinterpret_cast<uint8_t*>(buffer);
-            auto remaining = stat_in.st_size;
-            while (remaining) {
-                const auto written = write(fd_out, src, remaining);
-                if (written == -1 or errno)
-                    err(EXIT_FAILURE, "Failed to write to output file '%s'", argv[2]);
-                remaining -= written;
-                src += written;
-            }
-        }
-#endif
-
-        fsync(fd_out);
+        msync(buffer, stat_in.st_size, MS_ASYNC);
+        munmap(buffer, stat_in.st_size);
 
         const auto t_finish = ch::high_resolution_clock::now();
 
