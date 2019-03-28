@@ -184,7 +184,7 @@ int main(int argc, const char **argv)
 
         std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size at address " << buffer << '\n';
 
-        /* Spawn threads to cooncurrently read file. */
+        /* Spawn threads to concurrently read file. */
         {
             std::array<std::thread, NUM_THREADS_READ> threads;
             std::array<thread_info, NUM_THREADS_READ> thread_infos;
