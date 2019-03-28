@@ -24,6 +24,9 @@
 //======================================================================================================================
 
 
+#define GNU_PARALLEL 1
+
+
 #include "mmap.hpp"
 #include "record.hpp"
 #include <algorithm>
@@ -42,7 +45,9 @@
 #include <thread>
 #include <unistd.h>
 
-#include <sstream>
+#if GNU_PARALLEL
+#include <parallel/algorithm>
+#endif
 
 
 #define CONCURRENT_WRITE 1
@@ -53,7 +58,6 @@ namespace ch = std::chrono;
 
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
 constexpr unsigned NUM_THREADS_READ = 16;
-constexpr unsigned NUM_THREADS_WRITE = 16;
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
 
 
@@ -220,7 +224,11 @@ int main(int argc, const char **argv)
         {
             record *records = reinterpret_cast<record*>(buffer);
             std::cerr << "Sort the data.\n";
+#if GNU_PARALLEL
+            __gnu_parallel::sort(records, records + num_records);
+#else
             std::sort(records, records + num_records);
+#endif
             assert(std::is_sorted(records, records + num_records));
         }
 
