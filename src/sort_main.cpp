@@ -245,6 +245,8 @@ int main(int argc, const char **argv)
         }
 #endif
 
+        fsync(fd_out);
+
         const auto t_finish = ch::high_resolution_clock::now();
 
         /* Report times and throughput. */
@@ -270,7 +272,6 @@ int main(int argc, const char **argv)
 
     /* Release resources. */
     close(fd_in);
-    fsync(fd_out);
     close(fd_out);
 
     std::exit(EXIT_SUCCESS);
