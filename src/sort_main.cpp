@@ -53,7 +53,7 @@ namespace ch = std::chrono;
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
 constexpr unsigned NUM_THREADS_READ = 16;
 constexpr unsigned NUM_THREADS_WRITE = 16;
-constexpr std::size_t NUM_BLOCKS_PER_SLAB = 16;
+constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
 
 
 uint8_t k0;
