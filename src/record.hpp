@@ -47,6 +47,8 @@ struct __attribute__((packed)) record
     bool operator==(const record &other) const { return this->key == other.key; }
     bool operator!=(const record &other) const { return not operator==(other); }
 
+    void to_ascii(std::ostream &out) const;
+
     friend std::ostream & operator<<(std::ostream &out, const record &r);
 };
 static_assert(sizeof(record) == 100, "incorrect record size");

@@ -42,6 +42,14 @@ std::ostream & operator<<(std::ostream &out, const record &r)
     return out << std::dec;
 }
 
+void record::to_ascii(std::ostream &out) const
+{
+    for (auto k : key)
+        out << char(k);
+    for (auto p : payload)
+        out << char(p);
+}
+
 std::ostream & operator<<(std::ostream &out, const record_key &rk)
 {
     using std::setw, std::setfill;
