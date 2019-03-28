@@ -209,7 +209,6 @@ int main(int argc, const char **argv)
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
         /* Sort the records. */
-        if (0)
         {
             record *records = reinterpret_cast<record*>(buffer);
             std::cerr << "Sort the data.\n";
