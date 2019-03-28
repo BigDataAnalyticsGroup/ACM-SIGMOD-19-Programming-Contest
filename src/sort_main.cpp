@@ -77,6 +77,17 @@ void partial_read(const thread_info *ti)
     auto remaining = ti->count;
     auto offset = ti->offset;
     uint8_t *dst = reinterpret_cast<uint8_t*>(ti->buffer);
+
+    while (ti->slab_size < remaining) {
+        const auto read = pread(ti->fd, &dst[offset], ti->slab_size, offset);
+        if (read == -1) {
+            warn("Failed to read %ld bytes from file '%s' at offset %ld", ti->slab_size, ti->path, offset);
+            return;
+        }
+        remaining -= read;
+        offset += read;
+    }
+
     while (remaining) {
         const auto read = pread(ti->fd, &dst[offset], remaining, offset);
         if (read == -1) {
@@ -94,6 +105,17 @@ void partial_write(const thread_info *ti)
     auto remaining = ti->count;
     auto offset = ti->offset;
     uint8_t *src = reinterpret_cast<uint8_t*>(ti->buffer);
+
+    while (ti->slab_size < remaining) {
+        const auto written = pwrite(ti->fd, &src[offset], ti->slab_size, offset);
+        if (written == -1) {
+            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", ti->slab_size, offset, ti->path);
+            return;
+        }
+        remaining -= written;
+        offset += written;
+    }
+
     while (remaining) {
         const auto written = pwrite(ti->fd, &src[offset], remaining, offset);
         if (written == -1) {
