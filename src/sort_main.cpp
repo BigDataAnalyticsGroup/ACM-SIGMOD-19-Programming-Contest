@@ -110,11 +110,18 @@ void partial_write(const thread_info *ti)
     /* Verify data is sorted. */
     assert(std::is_sorted(ti->records, ti->records + ti->num_records));
 
-    ssize_t size = ti->num_records * sizeof(record);
-    off_t offset = ti->offset * sizeof(record);
-    if (pwrite(ti->fd_out, ti->records, size, offset) != size) {
-        warn("Failed to write %lu records to file '%s' starting at offset %lu", ti->num_records, ti->path, ti->offset);
-        return;
+    /* Write data to file. */
+    char *data = reinterpret_cast<char*>(ti->records);
+    std::size_t remaining = ti->num_records * sizeof(record);
+    off_t offset = 0;
+    while (remaining) {
+        const auto written = pwrite(ti->fd_out, data + offset, remaining, offset);
+        if (written == -1) {
+            warn("Failed to write %lu records to file '%s' starting at offset %lu", ti->num_records, ti->path, ti->offset);
+            return;
+        }
+        remaining -= written;
+        offset += written;
     }
 }
 
