@@ -44,7 +44,7 @@
 #include <sstream>
 
 
-#define CONCURRENT_WRITE 0
+#define CONCURRENT_WRITE 1
 
 
 namespace ch = std::chrono;
@@ -91,8 +91,18 @@ void partial_read(const thread_info *ti)
 /** Write a part of the sorted data to the output file. */
 void partial_write(const thread_info *ti)
 {
-    (void) ti;
-    // TODO
+    auto remaining = ti->count;
+    auto offset = ti->offset;
+    uint8_t *src = reinterpret_cast<uint8_t*>(ti->buffer);
+    while (remaining) {
+        const auto written = pwrite(ti->fd, &src[offset], remaining, offset);
+        if (written == -1) {
+            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", remaining, offset, ti->path);
+            return;
+        }
+        remaining -= written;
+        offset += written;
+    }
 }
 
 int main(int argc, const char **argv)
@@ -154,7 +164,7 @@ int main(int argc, const char **argv)
                 const std::size_t offset = tid * count_per_thread;
                 const std::size_t count = tid == NUM_THREADS_READ - 1 ? stat_in.st_size - offset : count_per_thread;
                 std::cerr << "Thread " << tid << " reads \"" << argv[1] << "\" at offset " << offset << " for "
-                          << count << " bytes in " << count / slab_size << " slabs of size " << slab_size << " bytes\n";
+                          << count << " bytes.\n";
                 thread_infos[tid] = thread_info {
                     .tid = tid,
                     .fd = fd_in,
@@ -194,10 +204,23 @@ int main(int argc, const char **argv)
         {
             std::array<std::thread, NUM_THREADS_WRITE> threads;
             std::array<thread_info, NUM_THREADS_WRITE> thread_infos;
+            const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
+            const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
             for (unsigned tid = 0; tid != NUM_THREADS_WRITE; ++tid) {
-                auto &ti = thread_infos[tid];
-                (void) ti;
-                // TODO
+                const std::size_t offset = tid * count_per_thread;
+                const std::size_t count = tid == NUM_THREADS_READ - 1 ? stat_in.st_size - offset : count_per_thread;
+                std::cerr << "Thread " << tid << " writes \"" << argv[2] << "\" at offset " << offset << " for "
+                          << count << " bytes.\n";
+                thread_infos[tid] = thread_info {
+                    .tid = tid,
+                    .fd = fd_out,
+                    .path = argv[2],
+                    .offset = tid * count_per_thread,
+                    .count = count,
+                    .buffer = buffer,
+                    .slab_size = slab_size,
+                };
+                threads[tid] = std::thread(partial_write, &thread_infos[tid]);
             }
 
             /* Join threads. */
@@ -212,12 +235,10 @@ int main(int argc, const char **argv)
         {
             uint8_t *src = reinterpret_cast<uint8_t*>(buffer);
             auto remaining = stat_in.st_size;
-
             while (remaining) {
                 const auto written = write(fd_out, src, remaining);
                 if (written == -1 or errno)
                     err(EXIT_FAILURE, "Failed to write to output file '%s'", argv[2]);
-                std::cerr << "Write " << written << " bytes from address " << (void*) src << '\n';
                 remaining -= written;
                 src += written;
             }
