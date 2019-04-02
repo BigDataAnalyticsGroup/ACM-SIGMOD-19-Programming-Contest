@@ -25,24 +25,8 @@
 
 #pragma once
 
+#include "record.hpp"
 
-/** Sorting algorithm from the provided example. */
-void example_sort(const char *infile, const char *outfile);
 
-/** Sort by mmap-ing the input file, sort it with STL std::sort and write it sequentially to the output file directly to
- * disk. */
-void stl_sort_mmap_direct(const char *in, const char *out);
-
-/** Sort by mmap-ing the input file, sort it with STL std::sort and write it sequentially to the output file using a
- * FILE object. */
-void stl_sort_mmap_file(const char *in, const char *out);
-
-/** Sort by mmap-ing the input file, sort it with STL std::sort and write it sequentially to the output file using a
- * std::fstream. */
-void stl_sort_mmap_stream(const char *in, const char *out);
-
-/** Like stl_sort_mmap_file, but with a custom, very large buffer. */
-void stl_sort_mmap_file_custom_buffer(const char *infile, const char *outfile);
-
-/** Like stl_sort_mmap_stream, but with a custom, very large buffer. */
-void stl_sort_mmap_stream_custom_buffer(const char *in, const char *out);
+/** Implements American Flag Sort of records.  Processes the key byte-wise. */
+void american_flag_sort(record *first, record *last);
