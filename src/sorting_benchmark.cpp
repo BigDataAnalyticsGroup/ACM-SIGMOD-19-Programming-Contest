@@ -227,13 +227,9 @@ void sorting_benchmark(record *first, record *last)
 \
             /* Validate the sort. */ \
             bool success = std::is_sorted(buffer, buffer + size); \
-\
-            if (success) \
-                std::cout << ch::duration_cast<ch::microseconds>(t_end - t_begin).count(); \
-            else \
-                std::cout << "NaN"; \
-            std::cout << std::endl; \
             if (not success) std::abort(); \
+\
+            std::cout << ch::duration_cast<ch::microseconds>(t_end - t_begin).count() << std::endl; \
         } \
     } \
 }
