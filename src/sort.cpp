@@ -76,7 +76,7 @@ std::array<record*, NUM_BUCKETS> compute_buckets(record * const first,
         buckets[i] = p;
         p += histogram[i];
     }
-    assert(p == last and "incorrect computation of buckets");
+    (void) last, assert(p == last and "incorrect computation of buckets");
     return buckets;
 }
 
