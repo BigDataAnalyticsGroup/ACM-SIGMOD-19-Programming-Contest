@@ -141,7 +141,7 @@ int main(int argc, const char **argv)
     }
 
     /* Disable synchronization with C stdio. */
-    std::ios::sync_with_stdio(false);
+    //std::ios::sync_with_stdio(false);
 
     /* Open input file and get file stats. */
     int fd_in = open(argv[1], O_RDONLY);
@@ -229,6 +229,7 @@ int main(int argc, const char **argv)
             __gnu_parallel::sort(records, records + num_records);
 #else
             american_flag_sort(records, records + num_records);
+            //std::sort(records, records + num_records);
 #endif
             assert(std::is_sorted(records, records + num_records));
         }
