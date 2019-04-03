@@ -233,6 +233,7 @@ void sorting_benchmark(record *first, record *last)
             else \
                 std::cout << "NaN"; \
             std::cout << std::endl; \
+            if (not success) std::abort(); \
         } \
     } \
 }

@@ -55,32 +55,42 @@ constexpr std::size_t NUM_BUCKETS = pow(2, 8lu * sizeof(decltype(record::key)::v
 /** The minimum size of a sequence for American Flag Sort.  For shorter sequences, use std::sort or else. */
 constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 1UL << 11;
 
-/** Simple American flag sort. */
-void american_flag_sort_helper(record * const first, record * const last, const unsigned digit)
+histogram_t<unsigned, NUM_BUCKETS> compute_histogram(const record * const first,
+                                                     const record * const last,
+                                                     const unsigned digit)
 {
-    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
-    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
+    histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
     for (auto p = first; p != last; ++p)
-        ++hist[p->key[digit]];
-    assert(hist.count() == last - first and "histogram has incorrect number of entries");
+        ++histogram[p->key[digit]];
+    assert(histogram.count() == last - first and "histogram has incorrect number of entries");
+    return histogram;
+}
 
-    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
-     * from right to left. */
+std::array<record*, NUM_BUCKETS> compute_buckets(record * const first,
+                                                 record * const last,
+                                                 const histogram_t<unsigned, NUM_BUCKETS> &histogram)
+{
     std::array<record*, NUM_BUCKETS> buckets;
-    buckets[0] = first;
-    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
-        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
-    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
+    auto p = first;
+    for (std::size_t i = 0; i != NUM_BUCKETS; ++i) {
+        buckets[i] = p;
+        p += histogram[i];
+    }
+    assert(p == last and "incorrect computation of buckets");
+    return buckets;
+}
 
-    /* Copy bucket locations for the runners. */
+void american_flag_sort_partitioning(record * const first,
+                                     record * const last,
+                                     const unsigned digit,
+                                     const histogram_t<unsigned, NUM_BUCKETS> &histogram,
+                                     const std::array<record*, NUM_BUCKETS> &buckets)
+{
+    using std::swap;
     auto runners = buckets;
-
-    /* Distribute items to their buckets. */
     unsigned current_bucket = 0; ///< bucket id of the current source bucket
-    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+    while (not histogram[current_bucket]) ++current_bucket; // find the first non-empty bucket
     for (;;) {
-        using std::swap;
-
         auto src = runners[current_bucket]; // get source address
         const auto dst_bucket = src->key[digit]; // get destination bucket by digit
         auto dst = runners[dst_bucket]++; // get destination address
@@ -91,7 +101,7 @@ void american_flag_sort_helper(record * const first, record * const last, const 
             while (runners[current_bucket] == buckets[current_bucket + 1]) {
                 ++current_bucket;
                 if (current_bucket == NUM_BUCKETS - 1)
-                    goto loop_exit_distribution; // all buckets are finished
+                    return; // all buckets are finished
             }
             src = runners[current_bucket];
             continue;
@@ -99,13 +109,20 @@ void american_flag_sort_helper(record * const first, record * const last, const 
 
         swap(*src, *dst); // swap items
     }
-loop_exit_distribution:
+}
+
+/** Simple American flag sort. */
+void american_flag_sort_helper(record * const first, record * const last, const unsigned digit)
+{
+    const auto histogram = compute_histogram(first, last, digit);
+    const auto buckets = compute_buckets(first, last, histogram);
+    american_flag_sort_partitioning(first, last, digit, histogram, buckets);
 
     /* Recursive descent to sort buckets. */
     const auto next_digit = digit + 1;
     if (next_digit != 10) {
         auto p = first;
-        for (auto n : hist) {
+        for (auto n : histogram) {
             if (n > 1)
                 american_flag_sort_helper(p, p + n, next_digit);
             p += n;
@@ -116,26 +133,13 @@ loop_exit_distribution:
 /** American Flag Sort with multi-threading.  Parallelizes on recursive descent. */
 void american_flag_sort_helper(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
 {
-    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
-    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
-    for (auto p = first; p != last; ++p)
-        ++hist[p->key[digit]];
-    assert(hist.count() == last - first and "histogram has incorrect number of entries");
-
-    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
-     * from right to left. */
-    std::array<record*, NUM_BUCKETS> buckets;
-    buckets[0] = first;
-    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
-        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
-    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
-
-    /* Copy bucket locations for the runners. */
+    const auto histogram = compute_histogram(first, last, digit);
+    const auto buckets = compute_buckets(first, last, histogram);
     auto runners = buckets;
 
     /* Distribute items to their buckets. */
     unsigned current_bucket = 0; ///< bucket id of the current source bucket
-    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+    while (not histogram[current_bucket]) ++current_bucket; // find the first non-empty bucket
     for (;;) {
         using std::swap;
 
@@ -167,7 +171,7 @@ loop_exit_distribution:
         auto recurse = [&]() {
             uint_fast32_t bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
-                const auto num_records = hist[bucket_id];
+                const auto num_records = histogram[bucket_id];
                 if (num_records <= 1) continue;
 
                 auto thread_first = buckets[bucket_id];
@@ -175,7 +179,7 @@ loop_exit_distribution:
                 assert(first <= thread_first);
                 assert(thread_last <= last);
                 assert(thread_first <= thread_last);
-                if (hist[bucket_id] > 1)
+                if (histogram[bucket_id] > 1)
                     american_flag_sort_helper(thread_first, thread_last, next_digit);
             }
         };
@@ -193,26 +197,13 @@ loop_exit_distribution:
 /** Performs a simple American flag sort and falls back to std::sort for small ranges. */
 void my_hybrid_sort(record * const first, record * const last, const unsigned digit)
 {
-    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
-    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
-    for (auto p = first; p != last; ++p)
-        ++hist[p->key[digit]];
-    assert(hist.count() == last - first and "histogram has incorrect number of entries");
-
-    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
-     * from right to left. */
-    std::array<record*, NUM_BUCKETS> buckets;
-    buckets[0] = first;
-    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
-        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
-    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
-
-    /* Copy bucket locations for the runners. */
+    const auto histogram = compute_histogram(first, last, digit);
+    const auto buckets = compute_buckets(first, last, histogram);
     auto runners = buckets;
 
     /* Distribute items to their buckets. */
     unsigned current_bucket = 0; ///< bucket id of the current source bucket
-    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+    while (not histogram[current_bucket]) ++current_bucket; // find the first non-empty bucket
     for (;;) {
         using std::swap;
 
@@ -240,7 +231,7 @@ loop_exit_distribution:
     const auto next_digit = digit + 1;
     if (next_digit != 10) {
         auto p = first;
-        for (auto n : hist) {
+        for (auto n : histogram) {
             if (n > AMERICAN_FLAG_SORT_MIN_SIZE)
                 my_hybrid_sort(p, p + n, next_digit);
             else
@@ -254,26 +245,13 @@ loop_exit_distribution:
  * descent.  */
 void my_hybrid_sort(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
 {
-    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
-    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
-    for (auto p = first; p != last; ++p)
-        ++hist[p->key[digit]];
-    assert(hist.count() == last - first and "histogram has incorrect number of entries");
-
-    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
-     * from right to left. */
-    std::array<record*, NUM_BUCKETS> buckets;
-    buckets[0] = first;
-    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
-        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
-    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
-
-    /* Copy bucket locations for the runners. */
+    const auto histogram = compute_histogram(first, last, digit);
+    const auto buckets = compute_buckets(first, last, histogram);
     auto runners = buckets;
 
     /* Distribute items to their buckets. */
     unsigned current_bucket = 0; ///< bucket id of the current source bucket
-    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+    while (not histogram[current_bucket]) ++current_bucket; // find the first non-empty bucket
     for (;;) {
         using std::swap;
 
@@ -305,7 +283,7 @@ loop_exit_distribution:
         auto recurse = [&]() {
             uint_fast32_t bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
-                const auto num_records = hist[bucket_id];
+                const auto num_records = histogram[bucket_id];
                 if (num_records <= 1) continue;
 
                 auto thread_first = buckets[bucket_id];
@@ -313,7 +291,7 @@ loop_exit_distribution:
                 assert(first <= thread_first);
                 assert(thread_last <= last);
                 assert(thread_first <= thread_last);
-                if (hist[bucket_id] > AMERICAN_FLAG_SORT_MIN_SIZE)
+                if (histogram[bucket_id] > AMERICAN_FLAG_SORT_MIN_SIZE)
                     my_hybrid_sort(thread_first, thread_last, next_digit);
                 else
                     std::sort(thread_first, thread_last);
