@@ -25,6 +25,7 @@
 
 #include "sort.hpp"
 
+#include "hist.hpp"
 #include "record.hpp"
 #include <algorithm>
 #include <array>
@@ -34,7 +35,176 @@
 #include <vector>
 
 
-void american_flag_sort(record *first, record *last)
+/** Computes the power of base b to the exponent e. */
+template<typename Base, typename Exponent>
+constexpr auto pow(Base b, Exponent e) -> decltype(b * e)
 {
-
+    return e ? b * pow(b, e - 1) : 1;
 }
+
+/** The number of buckets for a radix sort with a byte as digit. */
+constexpr std::size_t NUM_BUCKETS = pow(2, 8lu * sizeof(decltype(record::key)::value_type));
+
+void american_flag_sort1(record * const first, record * const last, const unsigned radix)
+{
+    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
+    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
+    for (auto p = first; p != last; ++p)
+        ++hist[p->key[radix]];
+    assert(hist.count() == last - first and "histogram has incorrect number of entries");
+
+    std::cerr << hist << std::endl;
+
+    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
+     * from right to left. */
+    std::array<record*, NUM_BUCKETS> buckets;
+    buckets[0] = first;
+    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
+        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
+    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
+
+    /* Copy bucket locations for the runners. */
+    auto runners = buckets;
+
+#if 0
+    for (std::size_t i = 0; i != NUM_BUCKETS; ++i) {
+        std::cerr << "bucket " << i << ": starts at offset " << (buckets[i] - first) << " and is filled from ";
+        if (i & 0b1)
+            std::cerr << "right to left";
+        else
+            std::cerr << "left to right";
+        std::cerr << '\n';
+    }
+#endif
+
+    /* Distribute items to their buckets. */
+    record *hot_seat = first;
+    unsigned current_bucket = 0; ///< bucket id of the hot seat
+    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+#if 0
+    std::cerr << "First record with key ";
+    hot_seat->key.to_ascii(std::cerr);
+    std::cerr << " located in bucket " << current_bucket << ".\n";
+#endif
+
+    for (;;) {
+        using std::swap;
+
+        const auto bucket_id = hot_seat->key[radix]; // get bucket id by digit
+        auto dst = runners[bucket_id]++; // get destination address
+
+#if 0
+        std::cerr << "Record in hot seat with key ";
+        hot_seat->key.to_ascii(std::cerr);
+        std::cerr << " is moved to bucket " << unsigned(bucket_id) << '.';
+#endif
+
+        if (dst == hot_seat) {
+            /* Item in the hot seat is already in its destination bucket and need not be moved.  Find new hot seat. */
+            ++hot_seat;
+            if (hot_seat == buckets[current_bucket + 1]) { // if the hot seat reached the end of the current bucket
+                do {
+                    ++current_bucket;
+                    if (current_bucket == NUM_BUCKETS - 1)
+                        goto loop_exit_distribution;
+                } while (runners[current_bucket] == buckets[current_bucket + 1]); // search for next unfinished bucket
+                hot_seat = runners[current_bucket];
+            }
+            continue;
+        }
+#if 0
+        std::cerr << "  Swap item in hot seat with item " << (dst - first) << ".\n";
+#endif
+        swap(*hot_seat, *dst); // swap item in hot_seat with item at destination bucket
+    }
+loop_exit_distribution:
+
+#if 0
+    std::cerr << "After moving items to their buckets:\n";
+    for (auto p = first; p != last; ++p)
+        p->to_ascii(std::cerr);
+    std::cerr << std::endl;
+#endif
+
+    /* Sort buckets. */
+    const auto next_radix = radix + 1;
+    if (next_radix != 10) {
+        auto p = first;
+        for (auto n : hist) {
+            if (n > 1)
+                american_flag_sort1(p, p + n, next_radix);
+            p += n;
+        }
+    }
+}
+
+void american_flag_sort2(record * const first, record * const last, const unsigned radix)
+{
+    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
+    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
+    for (auto p = first; p != last; ++p)
+        ++hist[p->key[radix]];
+    assert(hist.count() == last - first and "histogram has incorrect number of entries");
+
+    std::cerr << hist << std::endl;
+
+    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
+     * from right to left. */
+    std::array<record*, NUM_BUCKETS> buckets;
+    buckets[0] = first;
+    buckets[1] = first + hist[0] + hist[1];
+    for (std::size_t i = 2; i != NUM_BUCKETS; i += 2) {
+        buckets[i] = buckets[i - 1]; // filled from left to right
+        buckets[i + 1] = buckets[i] + hist[i] + hist[i + 1]; // filled from right to left
+    }
+    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
+
+#if 0
+    for (std::size_t i = 0; i != NUM_BUCKETS; ++i) {
+        std::cerr << "bucket " << i << ": starts at offset " << (buckets[i] - first) << " and is filled from ";
+        if (i & 0b1)
+            std::cerr << "right to left";
+        else
+            std::cerr << "left to right";
+        std::cerr << '\n';
+    }
+#endif
+
+    /* Distribute items to their buckets. */
+    record *hot_seat = first;
+    for (auto n = last - first; n; --n) {
+        using std::swap;
+
+        std::cerr << "record in hot seat with key 0x" << hot_seat->key << " is moved to bucket ";
+
+        const auto bucket_id = hot_seat->key[radix]; // get bucket id by digit
+        std::cerr << unsigned(bucket_id);
+        const auto is_right_to_left = bucket_id & 0b1; // bucket is filled from right to left?
+        std::cerr << ", wich is filled from " << (is_right_to_left ? "right to left" : "left to right");
+        auto &p_bucket = buckets[bucket_id]; // get bucket boundary
+        std::cerr << " and starts at offset " << (p_bucket - first) << ".  Swap item in hot seat with item ";
+        p_bucket -= is_right_to_left; // if is_right_to_left, pre-decrement, otherwise nothing happens
+        std::cerr << (p_bucket - first) << ".\n";
+        swap(*hot_seat, *p_bucket); // swap item in hot_seat with item at destination bucket
+        p_bucket += not is_right_to_left; // if is_right_to_left, nothing happens, otherwise post-increment
+    }
+
+#ifndef NDEBUG
+    std::cerr << "After moving items to their buckets:\n";
+    for (auto p = first; p != last; ++p)
+        p->to_ascii(std::cerr);
+#endif
+
+    /* Sort buckets. */
+    const auto next_radix = radix + 1;
+    if (next_radix != 10) {
+        auto p = first;
+        for (auto n : hist) {
+            if (n > 1)
+                american_flag_sort1(p, p + n, next_radix);
+            p += n;
+        }
+    }
+}
+
+void american_flag_sort(record *first, record *last) { american_flag_sort1(first, last, 0); }

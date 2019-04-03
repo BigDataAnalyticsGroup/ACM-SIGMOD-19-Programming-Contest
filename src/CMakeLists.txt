@@ -1,6 +1,5 @@
 add_library(
     contest
-    hist.cpp
     rand16.cpp
     record.cpp
     sort.cpp

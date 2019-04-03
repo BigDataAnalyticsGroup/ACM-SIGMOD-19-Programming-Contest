@@ -31,37 +31,38 @@
 #include <iostream>
 
 
-constexpr unsigned NUM_RADIX_BITS = 8;
-constexpr unsigned NUM_PARTITIONS = 1 << NUM_RADIX_BITS;
+struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
+{
+    void to_ascii(std::ostream &out) const { for (auto c : *this) out << char(c); }
+
+    friend std::ostream & operator<<(std::ostream &out, const key_type &key);
+};
+
+struct __attribute__((packed)) payload_type : std::array<uint8_t, 90>
+{
+    bool operator<(const payload_type &) = delete;
+    bool operator>(const payload_type &) = delete;
+    bool operator<=(const payload_type &) = delete;
+    bool operator>=(const payload_type &) = delete;
+    bool operator==(const payload_type &) = delete;
+    bool operator!=(const payload_type &) = delete;
+
+    void to_ascii(std::ostream &out) const { for (auto c : *this) out << char(c); }
+
+    friend std::ostream & operator<<(std::ostream &out, const payload_type &payload);
+};
 
 struct __attribute__((packed)) record
 {
-    std::array<uint8_t, 10> key;
-    std::array<uint8_t, 90> payload;
-
-    /** Extracts the NUM_RADIX_BITS most significant bits from the key and places them in the lowest bits of the result.
-     * All other bits are set to 0. */
-    uint8_t get_radix_bits() const { return key[0]; }
+    key_type key;
+    payload_type payload;
 
     bool operator<(const record &other) const { return this->key < other.key; }
     bool operator==(const record &other) const { return this->key == other.key; }
     bool operator!=(const record &other) const { return not operator==(other); }
 
-    void to_ascii(std::ostream &out) const;
+    void to_ascii(std::ostream &out) const { key.to_ascii(out); payload.to_ascii(out); }
 
-    friend std::ostream & operator<<(std::ostream &out, const record &r);
+    friend std::ostream & operator<<(std::ostream &out, const record &r) { return out << r.key << "  " << r.payload; }
 };
 static_assert(sizeof(record) == 100, "incorrect record size");
-
-struct record_key
-{
-    std::array<uint8_t, 10> key;
-
-    bool operator<(const record &other) const { return this->key < other.key; }
-    bool operator==(const record &other) const { return this->key == other.key; }
-    bool operator!=(const record &other) const { return not operator==(other); }
-
-    std::array<uint8_t, 90> generate_payload_from_key() const;
-
-    friend std::ostream & operator<<(std::ostream &out, const record &r);
-};

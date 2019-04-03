@@ -26,16 +26,41 @@
 
 #include "record.hpp"
 #include <array>
+#include <iomanip>
 #include <iostream>
 
 
 /** The histogram. */
-struct histogram_t : public std::array<unsigned, NUM_PARTITIONS>
+template<typename T, std::size_t N>
+struct histogram_t : public std::array<T, N>
 {
     /** Computes the total count of entries in the histogram. */
-    unsigned count() const;
-    /** Computes a checksum of the histogram. */
-    unsigned checksum() const;
+    unsigned count() const {
+        unsigned sum = 0;
+        for (auto n : *this)
+            sum += n;
+        return sum;
+    }
 
-    friend std::ostream & operator<<(std::ostream &out, const histogram_t &histogram);
+    /** Computes a checksum of the histogram. */
+    unsigned checksum() const {
+        unsigned checksum = 0;
+        for (auto n : *this)
+            checksum = checksum * 7 + n;
+        return checksum;
+    }
+
+    friend std::ostream & operator<<(std::ostream &out, const histogram_t &histogram) {
+        using std::setw;
+
+        out << "Histogram of " << histogram.count() << " elements:";
+        for (std::size_t i = 0, count = 0; i != histogram.size(); ++i) {
+            if (not histogram[i]) continue;
+            if (count % 5 == 0)
+                out << "\n  ";
+            out << setw(3) << i << ": " << setw(5) << histogram[i] << " |    ";
+            ++count;
+        }
+        return out << '\n';
+    }
 };

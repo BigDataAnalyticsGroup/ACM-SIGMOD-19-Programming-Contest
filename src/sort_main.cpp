@@ -24,11 +24,12 @@
 //======================================================================================================================
 
 
-#define GNU_PARALLEL 1
+#define GNU_PARALLEL 0
 
 
 #include "mmap.hpp"
 #include "record.hpp"
+#include "sort.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -227,7 +228,7 @@ int main(int argc, const char **argv)
 #if GNU_PARALLEL
             __gnu_parallel::sort(records, records + num_records);
 #else
-            std::sort(records, records + num_records);
+            american_flag_sort(records, records + num_records);
 #endif
             assert(std::is_sorted(records, records + num_records));
         }
