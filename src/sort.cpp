@@ -52,12 +52,12 @@ constexpr auto pow(Base b, Exponent e) -> decltype(b * e)
 /** The number of buckets for a radix sort with a byte as digit. */
 constexpr std::size_t NUM_BUCKETS = pow(2, 8lu * sizeof(decltype(record::key)::value_type));
 
-unsigned long call_counter = 0;
+/** The minimum size of a sequence for American Flag Sort.  For shorter sequences, use std::sort or else. */
+constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 1UL << 11;
 
 /** Simple American flag sort. */
 void american_flag_sort_helper(record * const first, record * const last, const unsigned digit)
 {
-    ++call_counter;
     /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
     histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
     for (auto p = first; p != last; ++p)
@@ -106,7 +106,7 @@ loop_exit_distribution:
     if (next_digit != 10) {
         auto p = first;
         for (auto n : hist) {
-            if (n > 5000)
+            if (n > AMERICAN_FLAG_SORT_MIN_SIZE)
                 american_flag_sort_helper(p, p + n, next_digit);
             else
                 std::sort(p, p + n);
@@ -117,9 +117,8 @@ loop_exit_distribution:
 
 /** American Flag Sort with multi-threading.  Employs a work stealing worker technique to parallelize the recursive
  * descent. */
-void american_flag_sort_MT(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
+void american_flag_sort_helper(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
 {
-    ++call_counter;
     /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
     histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
     for (auto p = first; p != last; ++p)
@@ -168,22 +167,18 @@ loop_exit_distribution:
     const auto next_digit = digit + 1; ///< next digit to sort by
     if (next_digit != 10) {
         std::atomic_uint_fast32_t bucket_counter(0);
-        auto recurse = [&](unsigned tid) {
+        auto recurse = [&]() {
             uint_fast32_t bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
                 const auto num_records = hist[bucket_id];
                 if (num_records <= 1) continue;
-
-                std::ostringstream oss;
-                oss << "Thread " << tid << " sorts bucket " << bucket_id << " with " << num_records << " records.\n";
-                std::cerr << oss.str();
 
                 auto thread_first = buckets[bucket_id];
                 auto thread_last = thread_first + num_records;
                 assert(first <= thread_first);
                 assert(thread_last <= last);
                 assert(thread_first <= thread_last);
-                if (hist[bucket_id] > 5000)
+                if (hist[bucket_id] > AMERICAN_FLAG_SORT_MIN_SIZE)
                     american_flag_sort_helper(thread_first, thread_last, next_digit);
                 else
                     std::sort(thread_first, thread_last);
@@ -192,7 +187,7 @@ loop_exit_distribution:
 
         auto threads = new std::thread[num_threads];
         for (unsigned tid = 0; tid != num_threads; ++tid)
-            threads[tid] = std::thread(recurse, tid);
+            threads[tid] = std::thread(recurse);
         for (unsigned tid = 0; tid != num_threads; ++tid) {
             if (threads[tid].joinable())
                 threads[tid].join();
@@ -200,8 +195,5 @@ loop_exit_distribution:
     }
 }
 
-void american_flag_sort(record *first, record *last) {
-    call_counter = 0;
-    american_flag_sort_MT(first, last, 0, 16);
-    std::cerr << "Performed " << call_counter << " recursive calls for " << (last - first) << " elements.\n";
-}
+void american_flag_sort(record *first, record *last) { american_flag_sort_helper(first, last, 0); }
+void american_flag_sort_MT(record *first, record *last) { american_flag_sort_helper(first, last, 0, 16); }

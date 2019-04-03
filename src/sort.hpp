@@ -30,3 +30,6 @@
 
 /** Implements American Flag Sort of records.  Processes the key byte-wise. */
 void american_flag_sort(record *first, record *last);
+
+/** Implements American Flag Sort of records.  Processes the key byte-wise.  Performs multi-threading on recursion. */
+void american_flag_sort_MT(record *first, record *last);

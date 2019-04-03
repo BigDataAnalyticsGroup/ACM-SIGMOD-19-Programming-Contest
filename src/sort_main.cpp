@@ -23,10 +23,6 @@
 //
 //======================================================================================================================
 
-
-#define GNU_PARALLEL 0
-
-
 #include "mmap.hpp"
 #include "record.hpp"
 #include "sort.hpp"
@@ -46,13 +42,6 @@
 #include <thread>
 #include <unistd.h>
 
-#if GNU_PARALLEL
-#include <parallel/algorithm>
-#endif
-
-
-#define CONCURRENT_WRITE 1
-
 
 namespace ch = std::chrono;
 
@@ -60,9 +49,6 @@ namespace ch = std::chrono;
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
 constexpr unsigned NUM_THREADS_READ = 16;
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
-
-
-uint8_t k0;
 
 
 /** Information for the threads. */
@@ -187,7 +173,7 @@ int main(int argc, const char **argv)
         if (buffer == MAP_FAILED)
             err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
 
-        std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size at address " << buffer << '\n';
+        std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size at address " << buffer << ".\n";
 
         /* Spawn threads to concurrently read file. */
         {
@@ -198,8 +184,10 @@ int main(int argc, const char **argv)
             for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
                 const std::size_t offset = tid * count_per_thread;
                 const std::size_t count = tid == NUM_THREADS_READ - 1 ? stat_in.st_size - offset : count_per_thread;
+#if 0
                 std::cerr << "Thread " << tid << " reads \"" << argv[1] << "\" at offset " << offset << " for "
                           << count << " bytes.\n";
+#endif
                 thread_infos[tid] = thread_info {
                     .tid = tid,
                     .fd = fd_in,
@@ -225,12 +213,8 @@ int main(int argc, const char **argv)
         {
             record *records = reinterpret_cast<record*>(buffer);
             std::cerr << "Sort the data.\n";
-#if GNU_PARALLEL
-            __gnu_parallel::sort(records, records + num_records);
-#else
-            american_flag_sort(records, records + num_records);
+            american_flag_sort_MT(records, records + num_records);
             //std::sort(records, records + num_records);
-#endif
             assert(std::is_sorted(records, records + num_records));
         }
 
