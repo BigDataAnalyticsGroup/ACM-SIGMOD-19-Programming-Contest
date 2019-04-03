@@ -241,6 +241,8 @@ void sorting_benchmark(record *first, record *last)
     BENCHMARK(__gnu_parallel::sort);
     BENCHMARK(american_flag_sort);
     BENCHMARK(american_flag_sort_MT);
+    BENCHMARK(my_hybrid_sort);
+    BENCHMARK(my_hybrid_sort_MT);
 
     delete[] buffer;
 }

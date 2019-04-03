@@ -106,17 +106,14 @@ loop_exit_distribution:
     if (next_digit != 10) {
         auto p = first;
         for (auto n : hist) {
-            if (n > AMERICAN_FLAG_SORT_MIN_SIZE)
+            if (n > 1)
                 american_flag_sort_helper(p, p + n, next_digit);
-            else
-                std::sort(p, p + n);
             p += n;
         }
     }
 }
 
-/** American Flag Sort with multi-threading.  Employs a work stealing worker technique to parallelize the recursive
- * descent. */
+/** American Flag Sort with multi-threading.  Parallelizes on recursive descent. */
 void american_flag_sort_helper(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
 {
     /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
@@ -178,8 +175,146 @@ loop_exit_distribution:
                 assert(first <= thread_first);
                 assert(thread_last <= last);
                 assert(thread_first <= thread_last);
-                if (hist[bucket_id] > AMERICAN_FLAG_SORT_MIN_SIZE)
+                if (hist[bucket_id] > 1)
                     american_flag_sort_helper(thread_first, thread_last, next_digit);
+            }
+        };
+
+        auto threads = new std::thread[num_threads];
+        for (unsigned tid = 0; tid != num_threads; ++tid)
+            threads[tid] = std::thread(recurse);
+        for (unsigned tid = 0; tid != num_threads; ++tid) {
+            if (threads[tid].joinable())
+                threads[tid].join();
+        }
+    }
+}
+
+/** Performs a simple American flag sort and falls back to std::sort for small ranges. */
+void my_hybrid_sort(record * const first, record * const last, const unsigned digit)
+{
+    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
+    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
+    for (auto p = first; p != last; ++p)
+        ++hist[p->key[digit]];
+    assert(hist.count() == last - first and "histogram has incorrect number of entries");
+
+    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
+     * from right to left. */
+    std::array<record*, NUM_BUCKETS> buckets;
+    buckets[0] = first;
+    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
+        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
+    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
+
+    /* Copy bucket locations for the runners. */
+    auto runners = buckets;
+
+    /* Distribute items to their buckets. */
+    unsigned current_bucket = 0; ///< bucket id of the current source bucket
+    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+    for (;;) {
+        using std::swap;
+
+        auto src = runners[current_bucket]; // get source address
+        const auto dst_bucket = src->key[digit]; // get destination bucket by digit
+        auto dst = runners[dst_bucket]++; // get destination address
+
+        if (src == dst) {
+            /* Item is already in its destination bucket and need not be moved.  Find new source by searching for the
+             * first unfinished bucket, starting with the current bucket. */
+            while (runners[current_bucket] == buckets[current_bucket + 1]) {
+                ++current_bucket;
+                if (current_bucket == NUM_BUCKETS - 1)
+                    goto loop_exit_distribution; // all buckets are finished
+            }
+            src = runners[current_bucket];
+            continue;
+        }
+
+        swap(*src, *dst); // swap items
+    }
+loop_exit_distribution:
+
+    /* Recursive descent to sort buckets. */
+    const auto next_digit = digit + 1;
+    if (next_digit != 10) {
+        auto p = first;
+        for (auto n : hist) {
+            if (n > AMERICAN_FLAG_SORT_MIN_SIZE)
+                my_hybrid_sort(p, p + n, next_digit);
+            else
+                std::sort(p, p + n);
+            p += n;
+        }
+    }
+}
+
+/** Performs a simple American flag sort and falls back to std::sort for small ranges.  Parallelizes on recursive
+ * descent.  */
+void my_hybrid_sort(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
+{
+    /* Compute the histogram, a.k.a. bucket sizes, of the most significant byte. */
+    histogram_t<unsigned, NUM_BUCKETS> hist{ {0} };
+    for (auto p = first; p != last; ++p)
+        ++hist[p->key[digit]];
+    assert(hist.count() == last - first and "histogram has incorrect number of entries");
+
+    /* Compute the bucket offsets.  Buckets of even index are filled from left to right, buckets of odd index are filled
+     * from right to left. */
+    std::array<record*, NUM_BUCKETS> buckets;
+    buckets[0] = first;
+    for (std::size_t i = 1; i != NUM_BUCKETS; ++i)
+        buckets[i] = buckets[i - 1] + hist[i - 1]; // filled from left to right
+    assert(buckets[NUM_BUCKETS - 1] + hist[NUM_BUCKETS - 1] == last and "incorrect computation of bucket location");
+
+    /* Copy bucket locations for the runners. */
+    auto runners = buckets;
+
+    /* Distribute items to their buckets. */
+    unsigned current_bucket = 0; ///< bucket id of the current source bucket
+    while (not hist[current_bucket]) ++current_bucket; // find the first non-empty bucket
+    for (;;) {
+        using std::swap;
+
+        auto src = runners[current_bucket]; // get source address
+        const auto dst_bucket = src->key[digit]; // get destination bucket by digit
+        auto dst = runners[dst_bucket]++; // get destination address
+
+        if (src == dst) {
+            /* Item is already in its destination bucket and need not be moved.  Find new source by searching for the
+             * first unfinished bucket, starting with the current bucket. */
+            while (runners[current_bucket] == buckets[current_bucket + 1]) {
+                ++current_bucket;
+                if (current_bucket == NUM_BUCKETS - 1)
+                    goto loop_exit_distribution; // all buckets are finished
+            }
+            src = runners[current_bucket];
+            continue;
+        }
+
+        swap(*src, *dst); // swap items
+    }
+loop_exit_distribution:
+
+    /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
+     * sorting from a queue. */
+    const auto next_digit = digit + 1; ///< next digit to sort by
+    if (next_digit != 10) {
+        std::atomic_uint_fast32_t bucket_counter(0);
+        auto recurse = [&]() {
+            uint_fast32_t bucket_id;
+            while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
+                const auto num_records = hist[bucket_id];
+                if (num_records <= 1) continue;
+
+                auto thread_first = buckets[bucket_id];
+                auto thread_last = thread_first + num_records;
+                assert(first <= thread_first);
+                assert(thread_last <= last);
+                assert(thread_first <= thread_last);
+                if (hist[bucket_id] > AMERICAN_FLAG_SORT_MIN_SIZE)
+                    my_hybrid_sort(thread_first, thread_last, next_digit);
                 else
                     std::sort(thread_first, thread_last);
             }
@@ -197,3 +332,6 @@ loop_exit_distribution:
 
 void american_flag_sort(record *first, record *last) { american_flag_sort_helper(first, last, 0); }
 void american_flag_sort_MT(record *first, record *last) { american_flag_sort_helper(first, last, 0, 16); }
+
+void my_hybrid_sort(record *first, record *last) { my_hybrid_sort(first, last, 0); }
+void my_hybrid_sort_MT(record *first, record *last) { my_hybrid_sort(first, last, 0, 16); }
