@@ -1,0 +1,200 @@
+% vim: set formatoptions-=a: set nospell:
+\documentclass[xcolor=dvipsnames,british]{beamer}
+\usetheme{metropolis}
+
+\input{latex-common/latex-common.tex}
+
+%=======================================================================================================================
+
+\newcommand{\Hl}[2]{%
+    \tikz[overlay]\node[fill=#1,inner xsep=2pt,inner ysep=-1pt,anchor=text,rectangle,rounded corners=1mm] {\strut#2};%
+    \phantom{#2}%
+}
+
+\renewcommand<>{\sout}[1]{%
+    \alt#2{\beameroriginal{\sout}{#1}}{#1}
+}
+
+%=== Tikz ==============================================================================================================
+\tikzstyle{rect}=[draw,rectangle,thick,on chain,font=\tiny,inner sep=1mm]
+
+%== Title ==============================================================================================================
+\title{ACM/SIGMOD 2019\\Programming Competition}
+\date{\today}
+\author{Immanuel L.\ Haffner}
+\institute{Saarland University}
+
+
+\begin{document}
+\maketitle
+
+\begin{frame}[t]{The Competition}
+    \begin{block}{Task}
+        In the competition, you have to
+        \begin{enumerate}
+            \item read an input file of records,
+            \item sort them by their key in ascending order, and
+            \item write the sorted sequence back to a file.
+        \end{enumerate}
+    \end{block}
+
+    \pause
+    \begin{block}{Evaluation}
+        \begin{itemize}
+            \item You submit a solution by uploading your code to the evaluation machine through the
+                \emph{,,Dashboard''}, a web front end.
+
+            \item Your submission is evaluated on four files of different sizes (10\,GB, 20\,GB, 40\,GB, and 100\,GB).
+            \item You are being scored by the total time of execution.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\begin{frame}[t]{The Competition}
+    \begin{block}{Schedule}
+        \footnotesize
+        \begin{tabularx}{\textwidth}{l|X}
+            March 05 & ,,Contest requirements specification and test data available.'' \\
+            \onslide<2->{\color{Red} March 11 & Contest requirements specification available.}\\
+            \onslide<2->{\color{Red} March 18 & Test data and sample solution available.}\\
+            March 19 & Team registration begins. ,,Leaderboard available.'' \\
+            \onslide<2->{\color{Red} March 22 & Leaderboard available.}\\
+            April 30, 23:59 (UTC+2) & Final submission deadline. \\
+            May 05 & Finalists notified.
+        \end{tabularx}
+    \end{block}
+\end{frame}
+
+\begin{frame}[t]{Detailed Task Description}
+    \begin{block}{Input}
+        Input file of $100$\,byte records:
+
+        \begin{tikzpicture}
+            \begin{scope}[start chain=going right,node distance=-\pgflinewidth]
+                \node[rect] (k0) {$k_0$};
+                \node[rect] {$k_1$};
+                \node[rect] {$k_2$};
+                \node[rect] {$k_3$};
+                \node[rect] {$k_4$};
+                \node[rect] {$k_5$};
+                \node[rect] {$k_6$};
+                \node[rect] {$k_7$};
+                \node[rect] {$k_8$};
+                \node[rect] {$k_9$};
+                \node[rect,minimum width=50mm] (payload) {payload};
+                \draw[decorate,decoration={brace,mirror,amplitude=10pt}]
+                    (k0.south west) -- node[below=3mm] {\footnotesize\textbf{10 byte key}} (payload.south west);
+                \draw[decorate,decoration={brace,mirror,amplitude=10pt}]
+                    (payload.south west) -- node[below=3mm] {\footnotesize\textbf{90 byte payload}} (payload.south east);
+            \end{scope}
+        \end{tikzpicture}
+
+        Input sizes between 10\,GB and 100\,GB means approx.\ 100\,M to 1\,B records.
+    \end{block}
+
+    \pause
+    \begin{block}{Output}
+        Write sorted records consecutively to output file.
+
+        Result is validated using the \lstinline{valsort} tool.
+    \end{block}
+
+    \pause
+    \begin{block}{Sorting}
+        Sort the records in ascending order by their key $k = k_0 \circ k_1 \circ \dots \circ k_9$.
+    \end{block}
+\end{frame}
+
+\begin{frame}{Hardware Specification}
+    \begin{tabularx}{\textwidth}{l|X}
+        Processor &
+        \begin{minipage}[t][2.5cm]{\linewidth}
+            2x Intel Xeon E5-2640 v4 @2.4GHz \\[1mm]
+            \tiny
+            \textbf{Performance:}
+            \begin{itemize}
+                \item 10 cores / 20 hyperthreads
+                \item 2.40\,GHz base / 3.40\,GHz turbo
+                \item 25\,MiB cache
+                \item AVX-2
+            \end{itemize}
+        \end{minipage} \\\hline
+        RAM & 30\,GiB \\\hline
+        OS & Ubuntu 17.10 / Linux 4.13 \\\hline
+        Disk &
+        \begin{minipage}[t][2.5cm]{\linewidth}
+            2x HPE EK001600GWEPH 1.6\,TB SATA-6GBPS \\[1mm]
+            \tiny
+            \textbf{Performance:}\\
+            \begin{tabular}{ll}
+                random reads & 61500 IOPS \\
+                random writes & 54500 IOPS \\
+                sequential reads & 500 MBPS \\
+                sequential writes & 475 MBPS
+            \end{tabular}
+        \end{minipage}
+    \end{tabularx}
+\end{frame}
+
+\begin{frame}[t]{Current State - I/O}
+    So far, only the small and medium data sets are released.  All sorting can be done in-memory.
+
+    \pause
+    Current approach: Read $\rightarrow$ Sort $\rightarrow$ Write
+
+    \pause
+    \begin{block}{Reading}
+        Read file in slabs of 256 disk blocks $\Rightarrow\ \sim$ 515\,MiB/s (exceeds specification :D)
+    \end{block}
+
+    \pause
+    \begin{block}{Writing}
+        Open the output file with \lstinline{mmap()}, allocate space with \lstinline{fallocate()} (with fallback to
+        \lstinline{ftruncate()}), directly sort in the mapped output file.  Writing the file becomes a no-op, kernel
+        ensures cached pages eventually make their way to disk. $\Rightarrow$ takes $\sim$ 0.5 sec, independent of file
+        size (equals 40\,GiB/s and more)
+    \end{block}
+\end{frame}
+
+\begin{frame}{Current State - Sorting}
+    \begin{block}{Sorting}
+        After reading and writing operates at the limits of the hardware, sorting is the final part to solve.\\
+        Finding a fitting sorting algorithm for the given data is crucial!
+    \end{block}
+\end{frame}
+
+\begin{frame}{Agenda - Sorting}
+    \begin{enumerate}
+        \item Implement, evaluate, and compare different sorting algorithms on real data and for different numbers of
+            records.
+        \item Design a hybrid approach that selects the best algorithm based on the size of the workload.
+        \item Optimistically speaking, this hybrid approach should always be on par with the ,,best'' sorting algorithm
+            for the given workload.
+        \item Consider potentially skewed data in future workloads (large or xlarge).  Optimally, performance is
+            independent of data distribution.
+        \item Parallelize the algorithm.  Keep skew in mind, employ some kind of load balancing between worker threads.
+    \end{enumerate}
+\end{frame}
+
+\begin{frame}{Agenda - Overlap Read and Sort}
+    While reading the input, the CPU is mostly idle.  Exploit the computational power by piggy backing some work onto
+    the reading.
+
+    \pause
+    \begin{itemize}[<+->]
+        \item run generation with a tournament replacement selection
+        \item histogram generation
+        \item out-of-place partitioning
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Agenda - External Memory Sorting}
+    \centering
+    \alert{\Huge ?}
+\end{frame}
+
+\begin{frame}
+    %dummy
+\end{frame}
+
+\end{document}

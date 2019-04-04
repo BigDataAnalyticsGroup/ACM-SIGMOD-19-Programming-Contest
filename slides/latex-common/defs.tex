@@ -1,0 +1,29 @@
+% vim: set nospell:
+
+% theorem environments
+%\newtheorem{theorem}{Theorem}
+%\newaliascnt{lemma}{theorem}
+%\newtheorem{lemma}[lemma]{Lemma}
+%\aliascntresetthe{lemma}
+
+% references
+\AtBeginDocument{
+    \def\equationautorefname{Equation}
+    \def\figureautorefname{Figure}
+    \def\subfigureautorefname{Figure}
+    \def\defnautorefname{Definition}
+    \def\Itemautorefname{Item}
+    \def\tableautorefname{Table}
+    \def\sectionautorefname{Section}
+    \def\subsectionautorefname{Section}
+    \def\subsubsectionautorefname{Section}
+    \def\chapterautorefname{Chapter}
+    \def\partautorefname{Part}
+    \def\algorithmautorefname{Algorithm}
+    \def\lemmaautorefname{Lemma}
+    \def\theoremautorefname{Theorem}
+    \def\definitionautorefname{Definition}
+}
+
+% tabular row height
+\renewcommand{\arraystretch}{1.5}

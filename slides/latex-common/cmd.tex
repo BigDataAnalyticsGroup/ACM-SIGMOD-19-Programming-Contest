@@ -1,0 +1,13 @@
+% vim: set nospell:
+
+\newcommand{\TODO}[1]{\textbf{\textcolor{red}{TODO: #1}}}
+\newcommand{\Sub}[1]{\textsubscript{#1}\xspace}
+\newcommand{\Sup}[1]{\textsuperscript{#1}\xspace}
+
+\newcommand{\Reg}{\Sup{\textregistered}}
+\newcommand{\Copy}{\Sup{\textcopyright}}
+\newcommand{\TM}{\Sup{\texttrademark}}
+
+% Multiline cell inside a tabular
+\newcommand{\multiline}[2][c]{%
+  \begin{tabular}[#1]{@{}l@{}}#2\end{tabular}}
