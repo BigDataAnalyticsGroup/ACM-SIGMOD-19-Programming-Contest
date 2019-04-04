@@ -25,8 +25,42 @@
 
 #pragma once
 
+#include "hist.hpp"
 #include "record.hpp"
 
+
+namespace {
+
+/** Computes the power of base b to the exponent e. */
+template<typename Base, typename Exponent>
+constexpr auto pow(Base b, Exponent e) -> decltype(b * e)
+{
+    return e ? b * pow(b, e - 1) : 1;
+}
+
+/** The minimum size of a sequence for American Flag Sort.  For shorter sequences, use std::sort or else. */
+constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 1UL << 11;
+
+}
+
+/** The number of buckets for a radix sort with a byte as digit. */
+constexpr std::size_t NUM_BUCKETS = pow(2, 8lu * sizeof(decltype(record::key)::value_type));
+
+
+/** Computes a histogram of the records for the given digit. */
+histogram_t<unsigned, NUM_BUCKETS> compute_histogram(const record * const first,
+                                                     const record * const last,
+                                                     const unsigned digit);
+
+/** Computes the bucket locations given the histogram. */
+std::array<record*, NUM_BUCKETS> compute_buckets(record * const first,
+                                                 record * const last,
+                                                 const histogram_t<unsigned, NUM_BUCKETS> &histogram);
+
+/** Implements the partitioning part of American Flag Sort.  Distributes items into buckets in-place. */
+void american_flag_sort_partitioning(const unsigned digit,
+                                     const histogram_t<unsigned, NUM_BUCKETS> &histogram,
+                                     const std::array<record*, NUM_BUCKETS> &buckets);
 
 /** Implements American Flag Sort of records.  Processes the key byte-wise. */
 void american_flag_sort(record *first, record *last);

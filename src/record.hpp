@@ -58,8 +58,11 @@ struct __attribute__((packed)) record
     payload_type payload;
 
     bool operator<(const record &other) const { return this->key < other.key; }
+    bool operator>(const record &other) const { return this->key > other.key; }
+    bool operator<=(const record &other) const { return this->key <= other.key; }
+    bool operator>=(const record &other) const { return this->key >= other.key; }
     bool operator==(const record &other) const { return this->key == other.key; }
-    bool operator!=(const record &other) const { return not operator==(other); }
+    bool operator!=(const record &other) const { return this->key != other.key; }
 
     void to_ascii(std::ostream &out) const { key.to_ascii(out); payload.to_ascii(out); }
 

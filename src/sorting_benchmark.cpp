@@ -225,14 +225,36 @@ void sorting_benchmark(record *first, record *last)
             (ALGO)(buffer, buffer + size); \
             auto t_end = ch::high_resolution_clock::now(); \
 \
-            /* Validate the sort. */ \
-            bool success = std::is_sorted(buffer, buffer + size); \
-            if (not success) std::abort(); \
-\
             std::cout << ch::duration_cast<ch::microseconds>(t_end - t_begin).count() << std::endl; \
         } \
     } \
 }
+
+    auto american_flag_sort_part = [](record *first, record *last) {
+        constexpr unsigned digit = 0;
+        const auto histogram = compute_histogram(first, last, digit);
+        const auto buckets = compute_buckets(first, last, histogram);
+        american_flag_sort_partitioning(digit, histogram, buckets);
+    };
+
+    auto std_partition = [](record *first, record *last) {
+        using std::swap;
+        auto mid = first + (last - first) / 2;
+        auto l = *first;
+        auto m = *mid;
+        auto r = last[-1];
+        if (m < l) swap(m, l);
+        if (r < l) swap(r, l);
+        if (r < m) swap(r, m);
+        assert(l <= m);
+        assert(m <= r);
+
+        const auto pivot = m;
+        std::partition(first, last, [pivot](const auto &em) { return em < pivot; });
+    };
+
+    BENCHMARK(american_flag_sort_part);
+    BENCHMARK(std_partition);
 
     BENCHMARK(std::sort);
     BENCHMARK(__gnu_parallel::sort);

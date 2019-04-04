@@ -25,8 +25,6 @@
 
 #include "sort.hpp"
 
-#include "hist.hpp"
-#include "record.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -41,19 +39,6 @@
 #define VERBOSE
 #endif
 
-
-/** Computes the power of base b to the exponent e. */
-template<typename Base, typename Exponent>
-constexpr auto pow(Base b, Exponent e) -> decltype(b * e)
-{
-    return e ? b * pow(b, e - 1) : 1;
-}
-
-/** The number of buckets for a radix sort with a byte as digit. */
-constexpr std::size_t NUM_BUCKETS = pow(2, 8lu * sizeof(decltype(record::key)::value_type));
-
-/** The minimum size of a sequence for American Flag Sort.  For shorter sequences, use std::sort or else. */
-constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 1UL << 11;
 
 histogram_t<unsigned, NUM_BUCKETS> compute_histogram(const record * const first,
                                                      const record * const last,
