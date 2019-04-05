@@ -38,9 +38,6 @@ constexpr auto pow(Base b, Exponent e) -> decltype(b * e)
     return e ? b * pow(b, e - 1) : 1;
 }
 
-/** The minimum size of a sequence for American Flag Sort.  For shorter sequences, use std::sort or else. */
-constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 1UL << 11;
-
 }
 
 /** The number of buckets for a radix sort with a byte as digit. */
@@ -57,16 +54,18 @@ std::array<record*, NUM_BUCKETS> compute_buckets(record * const first,
                                                  record * const last,
                                                  const histogram_t<unsigned, NUM_BUCKETS> &histogram);
 
-/** Implements the partitioning part of American Flag Sort.  Distributes items into buckets in-place. */
+/** Implements the partitioning phase of American Flag Sort, where items are distributed to their buckets. */
 void american_flag_sort_partitioning(const unsigned digit,
                                      const histogram_t<unsigned, NUM_BUCKETS> &histogram,
                                      const std::array<record*, NUM_BUCKETS> &buckets);
 
 /** Implements American Flag Sort of records.  Processes the key byte-wise. */
-void american_flag_sort(record *first, record *last);
+void american_flag_sort(record *first, record *last, const unsigned digit = 0);
 
-/** Implements American Flag Sort of records.  Processes the key byte-wise.  Performs multi-threading on recursion. */
-void american_flag_sort_MT(record *first, record *last);
+/** Implements American Flag Sort of records.  Processes the key byte-wise.  Performs multi-threading on first
+ * recursion. */
+void american_flag_sort_MT(record * const first, record * const last,
+                           const unsigned num_threads, const unsigned digit = 0);
 
 /** Implements Selection Sort.  Finds the smallest item in the remaining unsorted sequence, moves it to the front, and
  * continues at the next item.  */
@@ -79,4 +78,4 @@ void insertion_sort(record *first, record *last);
 void my_hybrid_sort(record *first, record *last);
 
 /** Performs a simple American Flag Sort and falls back to std::sort for small ranges. */
-void my_hybrid_sort_MT(record *first, record *last);
+void my_hybrid_sort_MT(record *first, record *last, const unsigned num_threads);

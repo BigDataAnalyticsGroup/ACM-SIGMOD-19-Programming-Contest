@@ -40,6 +40,10 @@
 #endif
 
 
+/** The minimum size of a sequence for American Flag Sort.  For shorter sequences, use std::sort or else. */
+//constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 1UL << 11;
+constexpr std::size_t AMERICAN_FLAG_SORT_MIN_SIZE = 50;
+
 histogram_t<unsigned, NUM_BUCKETS> compute_histogram(const record * const first,
                                                      const record * const last,
                                                      const unsigned digit)
@@ -94,8 +98,7 @@ void american_flag_sort_partitioning(const unsigned digit,
     }
 }
 
-/** Simple American flag sort. */
-void american_flag_sort_helper(record * const first, record * const last, const unsigned digit)
+void american_flag_sort(record * const first, record * const last, const unsigned digit)
 {
     const auto histogram = compute_histogram(first, last, digit);
     const auto buckets = compute_buckets(first, last, histogram);
@@ -107,17 +110,14 @@ void american_flag_sort_helper(record * const first, record * const last, const 
         auto p = first;
         for (auto n : histogram) {
             if (n > 1)
-                american_flag_sort_helper(p, p + n, next_digit);
+                american_flag_sort(p, p + n, next_digit);
             p += n;
         }
     }
 }
 
-/** American Flag Sort with multi-threading.  Parallelizes on recursive descent. */
-void american_flag_sort_helper(record * const first,
-                               record * const last,
-                               const unsigned digit,
-                               const unsigned num_threads)
+void american_flag_sort_MT(record * const first, record * const last,
+                           const unsigned num_threads, const unsigned digit)
 {
     const auto histogram = compute_histogram(first, last, digit);
     const auto buckets = compute_buckets(first, last, histogram);
@@ -138,7 +138,7 @@ void american_flag_sort_helper(record * const first,
                     assert(first <= thread_first);
                     assert(thread_last <= last);
                     assert(thread_first <= thread_last);
-                    american_flag_sort_helper(thread_first, thread_last, next_digit);
+                    american_flag_sort(thread_first, thread_last, next_digit);
                 }
             }
         };
@@ -198,55 +198,47 @@ void my_hybrid_sort_helper(record * const first, record * const last, const unsi
             if (n > AMERICAN_FLAG_SORT_MIN_SIZE)
                 my_hybrid_sort_helper(p, p + n, next_digit);
             else
-                std::sort(p, p + n);
+                //std::sort(p, p + n);
+                selection_sort(p, p + n);
             p += n;
         }
     }
 }
 
-/** Performs a simple American flag sort and falls back to std::sort for small ranges.  Parallelizes on recursive
- * descent.  */
-void my_hybrid_sort_helper(record * const first, record * const last, const unsigned digit, const unsigned num_threads)
+void my_hybrid_sort_MT(record * const first, record * const last, const unsigned num_threads)
 {
-    const auto histogram = compute_histogram(first, last, digit);
+    const auto histogram = compute_histogram(first, last, 0);
     const auto buckets = compute_buckets(first, last, histogram);
-    american_flag_sort_partitioning(digit, histogram, buckets);
+    american_flag_sort_partitioning(0, histogram, buckets);
 
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
      * sorting from a queue. */
-    const auto next_digit = digit + 1; ///< next digit to sort by
-    if (next_digit != 10) {
-        std::atomic_uint_fast32_t bucket_counter(0);
-        auto recurse = [&]() {
-            uint_fast32_t bucket_id;
-            while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
-                const auto num_records = histogram[bucket_id];
-                if (num_records > 1) {
-                    auto thread_first = buckets[bucket_id];
-                    auto thread_last = thread_first + num_records;
-                    assert(first <= thread_first);
-                    assert(thread_last <= last);
-                    assert(thread_first <= thread_last);
-                    if (num_records > AMERICAN_FLAG_SORT_MIN_SIZE)
-                        my_hybrid_sort_helper(thread_first, thread_last, next_digit);
-                    else
-                        std::sort(thread_first, thread_last);
-                }
+    std::atomic_uint_fast32_t bucket_counter(0);
+    auto recurse = [&]() {
+        uint_fast32_t bucket_id;
+        while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
+            const auto num_records = histogram[bucket_id];
+            if (num_records > 1) {
+                auto thread_first = buckets[bucket_id];
+                auto thread_last = thread_first + num_records;
+                assert(first <= thread_first);
+                assert(thread_last <= last);
+                assert(thread_first <= thread_last);
+                if (num_records > AMERICAN_FLAG_SORT_MIN_SIZE)
+                    my_hybrid_sort_helper(thread_first, thread_last, 1);
+                else
+                    std::sort(thread_first, thread_last);
             }
-        };
-
-        auto threads = new std::thread[num_threads];
-        for (unsigned tid = 0; tid != num_threads; ++tid)
-            threads[tid] = std::thread(recurse);
-        for (unsigned tid = 0; tid != num_threads; ++tid) {
-            if (threads[tid].joinable())
-                threads[tid].join();
         }
+    };
+
+    auto threads = new std::thread[num_threads];
+    for (unsigned tid = 0; tid != num_threads; ++tid)
+        threads[tid] = std::thread(recurse);
+    for (unsigned tid = 0; tid != num_threads; ++tid) {
+        if (threads[tid].joinable())
+            threads[tid].join();
     }
 }
 
-void american_flag_sort(record *first, record *last) { american_flag_sort_helper(first, last, 0); }
-void american_flag_sort_MT(record *first, record *last) { american_flag_sort_helper(first, last, 0, 16); }
-
 void my_hybrid_sort(record *first, record *last) { my_hybrid_sort_helper(first, last, 0); }
-void my_hybrid_sort_MT(record *first, record *last) { my_hybrid_sort_helper(first, last, 0, 16); }

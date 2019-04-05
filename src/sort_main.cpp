@@ -213,8 +213,7 @@ int main(int argc, const char **argv)
         {
             record *records = reinterpret_cast<record*>(buffer);
             std::cerr << "Sort the data.\n";
-            american_flag_sort_MT(records, records + num_records);
-            //std::sort(records, records + num_records);
+            my_hybrid_sort_MT(records, records + num_records, /* num_threads= */ 16);
             assert(std::is_sorted(records, records + num_records));
         }
 

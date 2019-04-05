@@ -284,20 +284,33 @@ void sorting_benchmark(record *first, record *last)
         compute_histogram(first, last, 0);
     };
 
+    /* Name mult-threaded algorithms. */
+    auto american_flag_sort_MT4 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 4); };
+    auto american_flag_sort_MT8 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 8); };
+    auto american_flag_sort_MT16 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 16); };
+    auto my_hybrid_sort_MT4 = [](record *first, record *last) { return my_hybrid_sort_MT(first, last, 4); };
+    auto my_hybrid_sort_MT8 = [](record *first, record *last) { return my_hybrid_sort_MT(first, last, 8); };
+    auto my_hybrid_sort_MT16 = [](record *first, record *last) { return my_hybrid_sort_MT(first, last, 16); };
+
+    /* Run the benchmarks. */
     BENCHMARK_UTIL(histogram);
 
     BENCHMARK_UTIL(american_flag_sort_part);
     BENCHMARK_UTIL(std_partition);
 
-    BENCHMARK_SORT(selection_sort, 5000);
-    BENCHMARK_SORT(insertion_sort, 5000);
+    BENCHMARK_SORT(selection_sort, 2000);
+    BENCHMARK_SORT(insertion_sort, 2000);
     BENCHMARK_SORT(std::sort, num_records);
     BENCHMARK_SORT(american_flag_sort, num_records);
     BENCHMARK_SORT(my_hybrid_sort, num_records);
 
     BENCHMARK_SORT(__gnu_parallel::sort, num_records);
-    BENCHMARK_SORT(american_flag_sort_MT, num_records);
-    BENCHMARK_SORT(my_hybrid_sort_MT, num_records);
+    BENCHMARK_SORT(american_flag_sort_MT4, num_records);
+    BENCHMARK_SORT(american_flag_sort_MT8, num_records);
+    BENCHMARK_SORT(american_flag_sort_MT16, num_records);
+    BENCHMARK_SORT(my_hybrid_sort_MT4, num_records);
+    BENCHMARK_SORT(my_hybrid_sort_MT8, num_records);
+    BENCHMARK_SORT(my_hybrid_sort_MT16, num_records);
 
     delete[] buffer;
 }
