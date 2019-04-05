@@ -23,6 +23,7 @@
 //
 //======================================================================================================================
 
+#include "ctpl.h"
 #include "mmap.hpp"
 #include "record.hpp"
 #include "sort.hpp"
@@ -47,7 +48,6 @@ namespace ch = std::chrono;
 
 
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
-constexpr unsigned NUM_THREADS_READ = 16;
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
 
 
@@ -64,16 +64,16 @@ struct thread_info
 };
 
 /** Load a part of a file into a destination memory location. */
-void partial_read(const thread_info *ti)
+void partial_read(int, thread_info ti)
 {
-    auto remaining = ti->count;
-    auto offset = ti->offset;
-    uint8_t *dst = reinterpret_cast<uint8_t*>(ti->buffer);
+    auto remaining = ti.count;
+    auto offset = ti.offset;
+    uint8_t *dst = reinterpret_cast<uint8_t*>(ti.buffer);
 
-    while (ti->slab_size < remaining) {
-        const auto read = pread(ti->fd, &dst[offset], ti->slab_size, offset);
+    while (ti.slab_size < remaining) {
+        const auto read = pread(ti.fd, &dst[offset], ti.slab_size, offset);
         if (read == -1) {
-            warn("Failed to read %ld bytes from file '%s' at offset %ld", ti->slab_size, ti->path, offset);
+            warn("Failed to read %ld bytes from file '%s' at offset %ld", ti.slab_size, ti.path, offset);
             return;
         }
         remaining -= read;
@@ -81,9 +81,9 @@ void partial_read(const thread_info *ti)
     }
 
     while (remaining) {
-        const auto read = pread(ti->fd, &dst[offset], remaining, offset);
+        const auto read = pread(ti.fd, &dst[offset], remaining, offset);
         if (read == -1) {
-            warn("Failed to read %ld bytes from file '%s' at offset %ld", remaining, ti->path, offset);
+            warn("Failed to read %ld bytes from file '%s' at offset %ld", remaining, ti.path, offset);
             return;
         }
         remaining -= read;
@@ -92,16 +92,16 @@ void partial_read(const thread_info *ti)
 }
 
 /** Write a part of the sorted data to the output file. */
-void partial_write(const thread_info *ti)
+void partial_write(int, thread_info ti)
 {
-    auto remaining = ti->count;
-    auto offset = ti->offset;
-    uint8_t *src = reinterpret_cast<uint8_t*>(ti->buffer);
+    auto remaining = ti.count;
+    auto offset = ti.offset;
+    uint8_t *src = reinterpret_cast<uint8_t*>(ti.buffer);
 
-    while (ti->slab_size < remaining) {
-        const auto written = pwrite(ti->fd, &src[offset], ti->slab_size, offset);
+    while (ti.slab_size < remaining) {
+        const auto written = pwrite(ti.fd, &src[offset], ti.slab_size, offset);
         if (written == -1) {
-            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", ti->slab_size, offset, ti->path);
+            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", ti.slab_size, offset, ti.path);
             return;
         }
         remaining -= written;
@@ -109,9 +109,9 @@ void partial_write(const thread_info *ti)
     }
 
     while (remaining) {
-        const auto written = pwrite(ti->fd, &src[offset], remaining, offset);
+        const auto written = pwrite(ti.fd, &src[offset], remaining, offset);
         if (written == -1) {
-            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", remaining, offset, ti->path);
+            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", remaining, offset, ti.path);
             return;
         }
         remaining -= written;
@@ -127,7 +127,12 @@ int main(int argc, const char **argv)
     }
 
     /* Disable synchronization with C stdio. */
-    //std::ios::sync_with_stdio(false);
+    std::ios::sync_with_stdio(false);
+
+    /* Create thread pool. */
+    const auto num_threads = std::thread::hardware_concurrency();
+    ctpl::thread_pool thread_pool(num_threads);
+    std::cerr << "Create thread pool with " << num_threads << " threads.\n";
 
     /* Open input file and get file stats. */
     int fd_in = open(argv[1], O_RDONLY);
@@ -161,9 +166,9 @@ int main(int argc, const char **argv)
     /* Select whether the workload fits into main memory or requires an external memory algorithm. */
     if (std::size_t(stat_in.st_size) < IN_MEMORY_THRESHOLD) {
         const auto t_begin_read = ch::high_resolution_clock::now();
-        std::cerr << "Read entire file into main memory.\n";
 
         /* MMap the output file. */
+        std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size.\n";
         void *buffer = mmap(/* addr=   */ nullptr,
                             /* length= */ stat_in.st_size,
                             /* prot=   */ PROT_READ|PROT_WRITE,
@@ -173,22 +178,16 @@ int main(int argc, const char **argv)
         if (buffer == MAP_FAILED)
             err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
 
-        std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size at address " << buffer << ".\n";
-
         /* Spawn threads to concurrently read file. */
+        std::cerr << "Read entire file into the buffer.\n";
         {
-            std::array<std::thread, NUM_THREADS_READ> threads;
-            std::array<thread_info, NUM_THREADS_READ> thread_infos;
-            const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
+            auto results = new std::future<void>[num_threads];
+            const std::size_t num_slabs_per_thread = num_slabs / num_threads;
             const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
+            for (unsigned tid = 0; tid != num_threads; ++tid) {
                 const std::size_t offset = tid * count_per_thread;
-                const std::size_t count = tid == NUM_THREADS_READ - 1 ? stat_in.st_size - offset : count_per_thread;
-#if 0
-                std::cerr << "Thread " << tid << " reads \"" << argv[1] << "\" at offset " << offset << " for "
-                          << count << " bytes.\n";
-#endif
-                thread_infos[tid] = thread_info {
+                const std::size_t count = tid == num_threads - 1 ? stat_in.st_size - offset : count_per_thread;
+                thread_info ti {
                     .tid = tid,
                     .fd = fd_in,
                     .path = argv[1],
@@ -197,14 +196,12 @@ int main(int argc, const char **argv)
                     .buffer = buffer,
                     .slab_size = slab_size,
                 };
-                threads[tid] = std::thread(partial_read, &thread_infos[tid]);
+                results[tid] = thread_pool.push(partial_read, ti);
             }
 
             /* Join threads. */
-            for (auto &t : threads) {
-                if (t.joinable())
-                    t.join();
-            }
+            for (unsigned tid = 0; tid != num_threads; ++tid)
+                results[tid].get();
         }
 
         const auto t_begin_sort = ch::high_resolution_clock::now();

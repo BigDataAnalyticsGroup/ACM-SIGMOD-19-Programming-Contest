@@ -30,5 +30,5 @@ SET(CMAKE_C_FLAGS               "${CMAKE_C_FLAGS} ${CMAKE_COMPILE_FLAGS}")
 SET(CMAKE_CXX_FLAGS             "-std=c++17 ${CMAKE_CXX_FLAGS} ${CMAKE_COMPILE_FLAGS}")
 
 # Directories
-include_directories(src/)
+include_directories(CTPL/ src/)
 add_subdirectory(src/)
