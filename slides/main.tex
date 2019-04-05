@@ -33,7 +33,7 @@
         In the competition, you have to
         \begin{enumerate}
             \item read an input file of records,
-            \item sort them by their key in ascending order, and
+            \item sort the records by their keys in ascending order, and
             \item write the sorted sequence back to a file.
         \end{enumerate}
     \end{block}
@@ -44,7 +44,7 @@
             \item You submit a solution by uploading your code to the evaluation machine through the
                 \emph{,,Dashboard''}, a web front end.
 
-            \item Your submission is evaluated on four files of different sizes (10\,GB, 20\,GB, 40\,GB, and 100\,GB).
+            \item Your submission is evaluated on four files of different size (10\,GB, 20\,GB, 40\,GB, and 100\,GB).
             \item You are being scored by the total time of execution.
         \end{itemize}
     \end{block}
@@ -103,6 +103,9 @@
     \begin{block}{Sorting}
         Sort the records in ascending order by their key $k = k_0 \circ k_1 \circ \dots \circ k_9$.
     \end{block}
+
+    \pause
+    \alert{Compression -- at any point -- is strictly forbidden.}
 \end{frame}
 
 \begin{frame}{Hardware Specification}
@@ -127,10 +130,10 @@
             \tiny
             \textbf{Performance:}\\
             \begin{tabular}{ll}
-                random reads & 61500 IOPS \\
-                random writes & 54500 IOPS \\
-                sequential reads & 500 MBPS \\
-                sequential writes & 475 MBPS
+                \textbullet\quad random reads & 61500 IOPS \\
+                \textbullet\quad random writes & 54500 IOPS \\
+                \textbullet\quad sequential reads & 500 MBPS \\
+                \textbullet\quad sequential writes & 475 MBPS
             \end{tabular}
         \end{minipage}
     \end{tabularx}
@@ -152,21 +155,20 @@
         Open the output file with \lstinline{mmap()}, allocate space with \lstinline{fallocate()} (with fallback to
         \lstinline{ftruncate()}), directly sort in the mapped output file.  Writing the file becomes a no-op, kernel
         ensures cached pages eventually make their way to disk. $\Rightarrow$ takes $\sim$ 0.5 sec, independent of file
-        size (equals 40\,GiB/s and more)
+        size (equals 40\,GB/s and more)
     \end{block}
 \end{frame}
 
 \begin{frame}{Current State - Sorting}
     \begin{block}{Sorting}
         After reading and writing operates at the limits of the hardware, sorting is the final part to solve.\\
-        Finding a fitting sorting algorithm for the given data is crucial!
+        \alert{Finding a fitting sorting algorithm for the given data is crucial!}
     \end{block}
 \end{frame}
 
 \begin{frame}{Agenda - Sorting}
     \begin{enumerate}
-        \item Implement, evaluate, and compare different sorting algorithms on real data and for different numbers of
-            records.
+        \item Implement, evaluate, and compare different sorting algorithms on real data and for different input sizes.
         \item Design a hybrid approach that selects the best algorithm based on the size of the workload.
         \item Optimistically speaking, this hybrid approach should always be on par with the ,,best'' sorting algorithm
             for the given workload.
@@ -185,7 +187,15 @@
         \item run generation with a tournament replacement selection
         \item histogram generation
         \item out-of-place partitioning
+        \item \alert{Ideas?}
     \end{itemize}
+
+    \pause[\thebeamerpauses]
+    Methods that finish the sort \emph{before} writing benefit from the delayed write via \lstinline{mmap()}.
+    \\
+    $\Rightarrow$ Consider potential write costs, depending on sorting method.  (E.g. a merge sort that immediately writes
+    the final merge to disk can overlap the sorting phase with both reading and writing.  However, it will have to
+    write!)
 \end{frame}
 
 \begin{frame}{Agenda - External Memory Sorting}

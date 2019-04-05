@@ -153,6 +153,36 @@ void american_flag_sort_helper(record * const first,
     }
 }
 
+void selection_sort(record *first, record *last)
+{
+    using std::swap;
+
+    /* For every position in the sequence, search for the next smallest item in the remaining, unsorted sequence. */
+    for (record *current = first; current != last; ++current) {
+        record *min = current;
+        /* Starting at the current item, find the smallest item in the remaining sequence. */
+        for (auto runner = current + 1; runner < last; ++runner) {
+            if (*runner < *min)
+                min = runner;
+        }
+        assert(*min <= *current);
+        swap(*current, *min);
+    }
+}
+
+void insertion_sort(record *first, record *last)
+{
+    using std::swap;
+
+    record tmp, *p, *q;
+    for (p = first + 1; p < last; ++p) {
+        tmp = *p;
+        for (q = p; q > first and *(q-1) > tmp; --q)
+            *q = *(q-1);
+        *q = tmp;
+    }
+}
+
 /** Performs a simple American flag sort and falls back to std::sort for small ranges. */
 void my_hybrid_sort_helper(record * const first, record * const last, const unsigned digit)
 {

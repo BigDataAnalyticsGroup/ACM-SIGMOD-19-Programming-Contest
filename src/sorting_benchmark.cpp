@@ -49,7 +49,8 @@ namespace ch = std::chrono;
 
 constexpr unsigned NUM_THREADS_READ = 16;
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
-constexpr unsigned NUM_RUNS = 3;
+constexpr unsigned NUM_RUNS = 5;
+constexpr std::size_t BENCHMARK_START_SIZE = 10;
 
 
 void sorting_benchmark(record *first, record *last);
@@ -209,9 +210,30 @@ void sorting_benchmark(record *first, record *last)
 
     std::cout << "algorithm, size, time\n";
 
-#define BENCHMARK(ALGO) { \
+#define BENCHMARK_UTIL(ALGO) { \
     /* Iterate over all sizes. */ \
-    for (std::size_t size = 100; size < num_records; size *= SCALE_FACTOR) { \
+    for (std::size_t size = BENCHMARK_START_SIZE; size < num_records; size *= SCALE_FACTOR) { \
+        /* Perform multiple runs for stable results. */ \
+        for (std::size_t i = 0; i != NUM_RUNS; ++i) { \
+            std::cout << #ALGO << ", " << size << ", "; \
+            std::cout.flush(); \
+\
+            /* Freshly initialize the buffer. */ \
+            std::copy(first, first + size, buffer); \
+\
+            /* Apply utility. */ \
+            auto t_begin = ch::high_resolution_clock::now(); \
+            (ALGO)(buffer, buffer + size); \
+            auto t_end = ch::high_resolution_clock::now(); \
+\
+            std::cout << ch::duration_cast<ch::microseconds>(t_end - t_begin).count() << std::endl; \
+        } \
+    } \
+}
+
+#define BENCHMARK_SORT(ALGO, MAX) { \
+    /* Iterate over all sizes. */ \
+    for (std::size_t size = BENCHMARK_START_SIZE; size < MAX; size *= SCALE_FACTOR) { \
         /* Perform multiple runs for stable results. */ \
         for (std::size_t i = 0; i != NUM_RUNS; ++i) { \
             std::cout << #ALGO << ", " << size << ", "; \
@@ -224,6 +246,11 @@ void sorting_benchmark(record *first, record *last)
             auto t_begin = ch::high_resolution_clock::now(); \
             (ALGO)(buffer, buffer + size); \
             auto t_end = ch::high_resolution_clock::now(); \
+\
+            /* Validate sort. */ \
+            bool success = std::is_sorted(buffer, buffer + size); \
+            if (not success) \
+                std::abort(); \
 \
             std::cout << ch::duration_cast<ch::microseconds>(t_end - t_begin).count() << std::endl; \
         } \
@@ -253,15 +280,24 @@ void sorting_benchmark(record *first, record *last)
         std::partition(first, last, [pivot](const auto &em) { return em < pivot; });
     };
 
-    BENCHMARK(american_flag_sort_part);
-    BENCHMARK(std_partition);
+    auto histogram = [](record *first, record *last) {
+        compute_histogram(first, last, 0);
+    };
 
-    BENCHMARK(std::sort);
-    BENCHMARK(__gnu_parallel::sort);
-    BENCHMARK(american_flag_sort);
-    BENCHMARK(american_flag_sort_MT);
-    BENCHMARK(my_hybrid_sort);
-    BENCHMARK(my_hybrid_sort_MT);
+    BENCHMARK_UTIL(histogram);
+
+    BENCHMARK_UTIL(american_flag_sort_part);
+    BENCHMARK_UTIL(std_partition);
+
+    BENCHMARK_SORT(selection_sort, 5000);
+    BENCHMARK_SORT(insertion_sort, 5000);
+    BENCHMARK_SORT(std::sort, num_records);
+    BENCHMARK_SORT(american_flag_sort, num_records);
+    BENCHMARK_SORT(my_hybrid_sort, num_records);
+
+    BENCHMARK_SORT(__gnu_parallel::sort, num_records);
+    BENCHMARK_SORT(american_flag_sort_MT, num_records);
+    BENCHMARK_SORT(my_hybrid_sort_MT, num_records);
 
     delete[] buffer;
 }
