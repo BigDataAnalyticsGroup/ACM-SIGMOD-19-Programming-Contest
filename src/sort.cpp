@@ -205,8 +205,9 @@ void my_hybrid_sort_helper(record * const first, record * const last, const unsi
     }
 }
 
-void my_hybrid_sort_MT(record * const first, record * const last, const unsigned num_threads)
+void my_hybrid_sort_MT(record * const first, record * const last, ctpl::thread_pool &thread_pool)
 {
+    const unsigned num_threads = thread_pool.size();
     const auto histogram = compute_histogram(first, last, 0);
     const auto buckets = compute_buckets(first, last, histogram);
     american_flag_sort_partitioning(0, histogram, buckets);
@@ -214,7 +215,7 @@ void my_hybrid_sort_MT(record * const first, record * const last, const unsigned
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
      * sorting from a queue. */
     std::atomic_uint_fast32_t bucket_counter(0);
-    auto recurse = [&]() {
+    auto recurse = [&](int) {
         uint_fast32_t bucket_id;
         while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
             const auto num_records = histogram[bucket_id];
@@ -232,13 +233,13 @@ void my_hybrid_sort_MT(record * const first, record * const last, const unsigned
         }
     };
 
-    auto threads = new std::thread[num_threads];
+    std::cerr << "Run my_hybrid_sort with " << num_threads << " recursive threads.\n";
+    auto results = new std::future<void>[num_threads];
     for (unsigned tid = 0; tid != num_threads; ++tid)
-        threads[tid] = std::thread(recurse);
-    for (unsigned tid = 0; tid != num_threads; ++tid) {
-        if (threads[tid].joinable())
-            threads[tid].join();
-    }
+        results[tid] = thread_pool.push(recurse);
+    for (unsigned tid = 0; tid != num_threads; ++tid)
+        results[tid].get();
+    delete[] results;
 }
 
 void my_hybrid_sort(record *first, record *last) { my_hybrid_sort_helper(first, last, 0); }

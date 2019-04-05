@@ -37,6 +37,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <parallel/algorithm>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -48,6 +49,7 @@ namespace ch = std::chrono;
 
 
 constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
+constexpr std::size_t GNU_PARALLEL_THRESHOLD = 11L * 1024 * 1024 * 1024; // 11 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
 
 
@@ -202,6 +204,7 @@ int main(int argc, const char **argv)
             /* Join threads. */
             for (unsigned tid = 0; tid != num_threads; ++tid)
                 results[tid].get();
+            delete[] results;
         }
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
@@ -210,7 +213,13 @@ int main(int argc, const char **argv)
         {
             record *records = reinterpret_cast<record*>(buffer);
             std::cerr << "Sort the data.\n";
-            my_hybrid_sort_MT(records, records + num_records, /* num_threads= */ 16);
+            if (std::size_t(stat_in.st_size) < GNU_PARALLEL_THRESHOLD) {
+                std::cerr << "Using GNU parallel sort.\n";
+                __gnu_parallel::sort(records, records + num_records);
+            } else {
+                std::cerr << "Using my multi-threaded hybrid sort.\n";
+                my_hybrid_sort_MT(records, records + num_records, thread_pool);
+            }
             assert(std::is_sorted(records, records + num_records));
         }
 

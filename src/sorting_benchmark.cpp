@@ -197,7 +197,9 @@ int main(int argc, const char **argv)
 
 void sorting_benchmark(record *first, record *last)
 {
-    /* TODO */
+    /* Create thread pool. */
+    const auto num_threads = std::thread::hardware_concurrency();
+    ctpl::thread_pool thread_pool(num_threads);
 
     /* Output format:
      *
@@ -288,9 +290,7 @@ void sorting_benchmark(record *first, record *last)
     auto american_flag_sort_MT4 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 4); };
     auto american_flag_sort_MT8 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 8); };
     auto american_flag_sort_MT16 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 16); };
-    auto my_hybrid_sort_MT4 = [](record *first, record *last) { return my_hybrid_sort_MT(first, last, 4); };
-    auto my_hybrid_sort_MT8 = [](record *first, record *last) { return my_hybrid_sort_MT(first, last, 8); };
-    auto my_hybrid_sort_MT16 = [](record *first, record *last) { return my_hybrid_sort_MT(first, last, 16); };
+    auto hybrid_sort_MT = [&thread_pool](record *first, record *last) { return my_hybrid_sort_MT(first, last, thread_pool); };
 
     /* Run the benchmarks. */
     BENCHMARK_UTIL(histogram);
@@ -308,9 +308,7 @@ void sorting_benchmark(record *first, record *last)
     BENCHMARK_SORT(american_flag_sort_MT4, num_records);
     BENCHMARK_SORT(american_flag_sort_MT8, num_records);
     BENCHMARK_SORT(american_flag_sort_MT16, num_records);
-    BENCHMARK_SORT(my_hybrid_sort_MT4, num_records);
-    BENCHMARK_SORT(my_hybrid_sort_MT8, num_records);
-    BENCHMARK_SORT(my_hybrid_sort_MT16, num_records);
+    BENCHMARK_SORT(hybrid_sort_MT, num_records);
 
     delete[] buffer;
 }
