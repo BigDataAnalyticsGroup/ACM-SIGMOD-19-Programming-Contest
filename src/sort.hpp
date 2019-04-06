@@ -68,6 +68,10 @@ void american_flag_sort(record *first, record *last, const unsigned digit = 0);
 void american_flag_sort_MT(record * const first, record * const last,
                            const unsigned num_threads, const unsigned digit = 0);
 
+/** Like american_flag_sort_MT, but exploits parallelism from the very beginning. */
+void american_flag_sort_parallel(record * const first, record * const last,
+                                 const unsigned digit, ctpl::thread_pool &thread_pool);
+
 /** Implements Selection Sort.  Finds the smallest item in the remaining unsorted sequence, moves it to the front, and
  * continues at the next item.  */
 void selection_sort(record *first, record *last);

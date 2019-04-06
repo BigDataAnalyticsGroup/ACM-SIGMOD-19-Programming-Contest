@@ -291,6 +291,7 @@ void sorting_benchmark(record *first, record *last)
     auto american_flag_sort_MT8 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 8); };
     auto american_flag_sort_MT16 = [](record *first, record *last) { return american_flag_sort_MT(first, last, 16); };
     auto hybrid_sort_MT = [&thread_pool](record *first, record *last) { return my_hybrid_sort_MT(first, last, thread_pool); };
+    auto american_flag_sort_pll = [&thread_pool](record *first, record *last) { return american_flag_sort_parallel(first, last, 0, thread_pool); };
 
     /* Run the benchmarks. */
     BENCHMARK_UTIL(histogram);
@@ -309,6 +310,7 @@ void sorting_benchmark(record *first, record *last)
     BENCHMARK_SORT(american_flag_sort_MT8, num_records);
     BENCHMARK_SORT(american_flag_sort_MT16, num_records);
     BENCHMARK_SORT(hybrid_sort_MT, num_records);
+    BENCHMARK_SORT(american_flag_sort_pll, num_records);
 
     delete[] buffer;
 }

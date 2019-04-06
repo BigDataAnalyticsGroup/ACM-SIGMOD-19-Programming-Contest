@@ -153,6 +153,69 @@ void american_flag_sort_MT(record * const first, record * const last,
     }
 }
 
+void american_flag_sort_parallel(record * const first, record * const last,
+                                 const unsigned digit, ctpl::thread_pool &thread_pool)
+{
+    const unsigned num_threads = thread_pool.size();
+    auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[num_threads];
+    auto compute_hist = [](int, record *first, record *last) { return compute_histogram(first, last, 0); };
+
+    /* Compute a histogram for each thread region. */
+    const auto num_records = last - first;
+    const auto num_records_per_thread = num_records / num_threads;
+    auto thread_first = first;
+    auto results = new std::future<histogram_t<unsigned, NUM_BUCKETS>>[num_threads];
+    for (unsigned tid = 0; tid != num_threads; ++tid) {
+        auto thread_last = tid == num_threads - 1 ? last : thread_first + num_records_per_thread;
+        assert(thread_first >= first);
+        assert(thread_first <= thread_last);
+        assert(thread_last <= last);
+        results[tid] = thread_pool.push(compute_hist, thread_first, thread_last);
+        thread_first = thread_last;
+    }
+    for (unsigned tid = 0; tid != num_threads; ++tid)
+        histograms[tid] = results[tid].get();
+    delete[] results;
+
+    /* Merge the histograms and compute the buckets. */
+    histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
+    for (unsigned tid = 0; tid != num_threads; ++tid)
+        histogram += histograms[tid];
+    assert(histogram.count() == num_records and "histogram accumulation failed");
+
+    const auto buckets = compute_buckets(first, last, histogram);
+    american_flag_sort_partitioning(digit, histogram, buckets);
+
+    /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
+     * sorting from a queue. */
+    const auto next_digit = digit + 1; ///< next digit to sort by
+    if (next_digit != 10) {
+        std::atomic_uint_fast32_t bucket_counter(0);
+        auto recurse = [&]() {
+            uint_fast32_t bucket_id;
+            while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
+                const auto num_records = histogram[bucket_id];
+                if (num_records > 1) {
+                    auto thread_first = buckets[bucket_id];
+                    auto thread_last = thread_first + num_records;
+                    assert(first <= thread_first);
+                    assert(thread_last <= last);
+                    assert(thread_first <= thread_last);
+                    american_flag_sort(thread_first, thread_last, next_digit);
+                }
+            }
+        };
+
+        auto threads = new std::thread[num_threads];
+        for (unsigned tid = 0; tid != num_threads; ++tid)
+            threads[tid] = std::thread(recurse);
+        for (unsigned tid = 0; tid != num_threads; ++tid) {
+            if (threads[tid].joinable())
+                threads[tid].join();
+        }
+    }
+}
+
 void selection_sort(record *first, record *last)
 {
     using std::swap;
@@ -233,7 +296,6 @@ void my_hybrid_sort_MT(record * const first, record * const last, ctpl::thread_p
         }
     };
 
-    std::cerr << "Run my_hybrid_sort with " << num_threads << " recursive threads.\n";
     auto results = new std::future<void>[num_threads];
     for (unsigned tid = 0; tid != num_threads; ++tid)
         results[tid] = thread_pool.push(recurse);

@@ -34,6 +34,19 @@
 template<typename T, std::size_t N>
 struct histogram_t : public std::array<T, N>
 {
+    histogram_t operator+(const histogram_t &other) const {
+        histogram_t<T, N> h;
+        for (std::size_t i = 0; i != N; ++i)
+            h[i] = (*this)[i] + other[i];
+        return h;
+    }
+
+    histogram_t & operator+=(const histogram_t &other) {
+        for (std::size_t i = 0; i != N; ++i)
+            (*this)[i] += other[i];
+        return *this;
+    }
+
     /** Computes the total count of entries in the histogram. */
     unsigned count() const {
         unsigned sum = 0;
