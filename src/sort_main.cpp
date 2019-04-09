@@ -129,7 +129,7 @@ int main(int argc, const char **argv)
     }
 
     /* Disable synchronization with C stdio. */
-    //std::ios::sync_with_stdio(false);
+    std::ios::sync_with_stdio(false);
 
     /* Create thread pool. */
     const auto num_threads = std::thread::hardware_concurrency();
@@ -224,7 +224,7 @@ int main(int argc, const char **argv)
                 std::cerr << "Using GNU parallel sort.\n";
                 __gnu_parallel::sort(records, records + num_records);
             } else {
-                //std::cerr << "Using my multi-threaded hybrid sort.\n";
+                std::cerr << "Using my multi-threaded hybrid sort.\n";
                 //my_hybrid_sort_MT(records, records + num_records, thread_pool);
                 american_flag_sort_parallel(records, records + num_records, 0, thread_pool);
             }
