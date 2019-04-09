@@ -247,11 +247,36 @@ void american_flag_sort_parallel(record * const first, record * const last,
             std::cerr << oss.str();
 #endif
             if (dst_bucket == current_bucket) {
+#ifndef NDEBUG
+                oss.str("");
+                oss << "  Thread " << tid
+                    << ": Item is in its correct position.  Continue with next item of the current bucket.\n";
+                std::cerr << oss.str();
+#endif
+                src = heads[current_bucket].ptr.fetch_add(1); // continue with next element of current bucket
+                continue;
+            } else if (dst_bucket < current_bucket) {
+#ifndef NDEBUG
+                oss.str("");
+                oss << "  Thread " << tid
+                    << ": Item is meant to be moved to a destination bucket at a *lower* position.  Skip this item, as "
+                    << "it will be properly partitioned by some other thread.  Continue in the next bucket.\n";
+                std::cerr << oss.str();
+#endif
+                heads[current_bucket].ptr.fetch_sub(1);
+                ++current_bucket;
                 src = heads[current_bucket].ptr.fetch_add(1);
                 continue;
             }
 
             auto dst = heads[dst_bucket].ptr.fetch_add(1); // get destination address
+
+            /* Busy-wait until resource in bucket becomes available. */
+            while (dst >= tails[dst_bucket]) {
+                heads[dst_bucket].ptr.fetch_sub(1);
+                std::this_thread::yield();
+                dst = heads[dst_bucket].ptr.fetch_add(1);
+            }
 #ifndef NDEBUG
             oss.str("");
             oss << "  Thread " << tid << ": Swap item ";
@@ -261,6 +286,23 @@ void american_flag_sort_parallel(record * const first, record * const last,
             oss << " at offset " << (dst - first) << " in bucket " << unsigned(dst_bucket) << ".\n";
             std::cerr << oss.str();
 #endif
+
+            /* Items are always moved from their current position to a position in their destination bucket, by swapping
+             * places with the next unpartitioned item in the destination bucket.  Because partitioning starts with the
+             * first item in the first non-empty bucket, the destination of an item is either its current position or a
+             * position in a bucket *after* the current one, i.e. a higher position.  If the situation arises, that an
+             * item is meant to be moved to a lower position, this means that there is an item at the destination that
+             * has not *yet* been properly partitioned.  This situation arises because of the parallel partitioning with
+             * multiple threads; it cannot occur in sequential American Flag Sort partitioning.  To properly deal with
+             * this situation, just give the resources back and *skip* the current item.  It will be acquired and moved
+             * by some other thread, who then is in duty to move the element to its proper destination bucket.  */
+            if (dst < src) {
+                oss.str("");
+                oss << "  Thread " << tid
+                    << ": Attempting to move item to lower position.  This task must be skipped.\n";
+                std::cerr << oss.str();
+            }
+
             if (dst >= tails[dst_bucket]) {
                 oss.str("");
                 oss << "  Thread " << tid << ": Deadlock detected.  Holding resource at offset " << (src - first)
