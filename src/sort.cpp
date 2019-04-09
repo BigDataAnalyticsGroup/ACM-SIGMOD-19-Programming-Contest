@@ -158,33 +158,129 @@ void american_flag_sort_parallel(record * const first, record * const last,
 {
     const unsigned num_threads = thread_pool.size();
     auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[num_threads];
-    auto compute_hist = [](int, record *first, record *last) { return compute_histogram(first, last, 0); };
+    auto compute_hist = [histograms](int, int tid, record *first, record *last) {
+        histograms[tid] = compute_histogram(first, last, 0);
+    };
 
     /* Compute a histogram for each thread region. */
     const auto num_records = last - first;
     const auto num_records_per_thread = num_records / num_threads;
     auto thread_first = first;
-    auto results = new std::future<histogram_t<unsigned, NUM_BUCKETS>>[num_threads];
+    auto results = new std::future<void>[num_threads];
     for (unsigned tid = 0; tid != num_threads; ++tid) {
         auto thread_last = tid == num_threads - 1 ? last : thread_first + num_records_per_thread;
         assert(thread_first >= first);
         assert(thread_first <= thread_last);
         assert(thread_last <= last);
-        results[tid] = thread_pool.push(compute_hist, thread_first, thread_last);
+        results[tid] = thread_pool.push(compute_hist, tid, thread_first, thread_last);
         thread_first = thread_last;
     }
     for (unsigned tid = 0; tid != num_threads; ++tid)
-        histograms[tid] = results[tid].get();
-    delete[] results;
+        results[tid].get();
 
     /* Merge the histograms and compute the buckets. */
     histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
     for (unsigned tid = 0; tid != num_threads; ++tid)
         histogram += histograms[tid];
+    const auto buckets = compute_buckets(first, last, histogram);
     assert(histogram.count() == num_records and "histogram accumulation failed");
 
-    const auto buckets = compute_buckets(first, last, histogram);
-    american_flag_sort_partitioning(digit, histogram, buckets);
+    std::cerr << histogram << std::endl;
+
+    /* Compute the heads and tails of the buckets.  Place the heads in separate cache lines, that are guarded with
+     * std::atomic for inter-thread synchronization. */
+    struct __attribute__((aligned(64))) head_t { std::atomic<record*> ptr; };
+    static_assert(sizeof(head_t) == 64, "incorrect size; could lead to incorrect alignment");
+    head_t *heads = static_cast<head_t*>(aligned_alloc(64, NUM_BUCKETS * sizeof(head_t)));
+    std::array<record*, NUM_BUCKETS> tails;
+    for (std::size_t i = 0; i != NUM_BUCKETS; ++i) {
+        new (&heads[i]) std::atomic<record*>(buckets[i]);
+        tails[i] = buckets[i] + histogram[i];
+    }
+
+    unsigned current_bucket = 0; ///< bucket id of the current source bucket
+    while (not histogram[current_bucket]) ++current_bucket; // find the first non-empty bucket
+
+    auto distribute = [first, digit, heads, tails](int, int tid) {
+        using std::swap;
+        std::ostringstream oss;
+
+        unsigned current_bucket = 0;
+        record *src = heads[current_bucket].ptr.fetch_add(1); // claim a record in the source bucket
+        for (;;) {
+            /* If current source is outside the current bucket, search for a new source. */
+            if (src >= tails[current_bucket]) { // out-of-bounds
+#ifndef NDEBUG
+                oss.str("");
+                oss << "  Thread " << tid << ": Current src at offset " << (src - first) << " is out of bounds.\n";
+                std::cerr << oss.str();
+#endif
+                while (src >= tails[current_bucket]) {
+                    --heads[current_bucket].ptr; // give claimed record back
+                    ++current_bucket;
+                    if (current_bucket == NUM_BUCKETS) return; // all buckets finished
+                    src = heads[current_bucket].ptr.fetch_add(1);
+                }
+#ifndef NDEBUG
+                oss.str("");
+                oss << "  Thread " << tid << ": Continue with bucket " << current_bucket << " and offset "
+                    << (src - first) << ".\n";
+                std::cerr << oss.str();
+#endif
+            }
+            assert(src < tails[current_bucket] and "source out of bounds");
+
+#ifndef NDEBUG
+            oss.str("");
+            oss << "  Thread " << tid << ": Load item ";
+            src->key.to_ascii(oss);
+            oss << " at offset " << (src - first) << ".\n";
+            std::cerr << oss.str();
+#endif
+
+            const auto dst_bucket = src->key[digit]; // get destination bucket by digit
+#ifndef NDEBUG
+            oss.str("");
+            oss << "  Thread " << tid << ": Item ";
+            src->key.to_ascii(oss);
+            oss << " belongs into bucket " << unsigned(dst_bucket) << ".\n";
+            std::cerr << oss.str();
+#endif
+            if (dst_bucket == current_bucket) {
+                src = heads[current_bucket].ptr.fetch_add(1);
+                continue;
+            }
+
+            auto dst = heads[dst_bucket].ptr.fetch_add(1); // get destination address
+#ifndef NDEBUG
+            oss.str("");
+            oss << "  Thread " << tid << ": Swap item ";
+            src->key.to_ascii(oss);
+            oss << " at offset " << (src - first) << " with item ";
+            dst->key.to_ascii(oss);
+            oss << " at offset " << (dst - first) << " in bucket " << unsigned(dst_bucket) << ".\n";
+            std::cerr << oss.str();
+#endif
+            if (dst >= tails[dst_bucket]) {
+                oss.str("");
+                oss << "  Thread " << tid << ": Deadlock detected.  Holding resource at offset " << (src - first)
+                    << " and trying to acquire resource in bucket " << unsigned(dst_bucket)
+                    << ", which is currently at offset " << (dst - first) << " and out of bounds.\n";
+                std::cerr << oss.str();
+            }
+            assert(dst < tails[dst_bucket] and "destination out-of-bounds; this must never happen; histogram incorrect or sync error?");
+
+            swap(*src, *dst); // swap items
+        }
+    };
+
+    for (unsigned tid = 0; tid != 2; ++tid)
+        results[tid] = thread_pool.push(distribute, tid);
+    for (unsigned tid = 0; tid != 2; ++tid)
+        results[tid].get();
+
+    delete[] results;
+    free(heads);
 
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
      * sorting from a queue. */
