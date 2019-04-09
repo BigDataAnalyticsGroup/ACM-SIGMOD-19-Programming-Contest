@@ -37,6 +37,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <numa.h>
 #include <parallel/algorithm>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -128,11 +129,14 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
+    /* Bind to NUMA node 0. */
+    numa_run_on_node(0);
+
     /* Disable synchronization with C stdio. */
-    std::ios::sync_with_stdio(false);
+    //std::ios::sync_with_stdio(false);
 
     /* Create thread pool. */
-    const auto num_threads = std::thread::hardware_concurrency();
+    const auto num_threads = 20;
     ctpl::thread_pool thread_pool(num_threads);
     std::cerr << "Create thread pool with " << num_threads << " threads.\n";
 

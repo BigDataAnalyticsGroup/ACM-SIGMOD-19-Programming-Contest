@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <sched.h>
 #include <thread>
 #include <thread>
 #include <vector>
@@ -293,6 +294,10 @@ void american_flag_sort_parallel(record * const first, record * const last,
     auto distribute = [digit, first, heads, tails](int tid, unsigned curr_bucket) {
         using std::swap;
         std::ostringstream oss;
+
+        oss.str("");
+        oss << "  Thread " << tid << " running on logical CPU core " << sched_getcpu() << ".\n";
+        std::cerr << oss.str();
 
 #ifndef NDEBUG
 #define WRITE(WHAT) { \
