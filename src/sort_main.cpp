@@ -38,11 +38,15 @@
 #include <fstream>
 #include <iostream>
 #include <parallel/algorithm>
+#include <sched.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
+
+
+#define FOR_SUBMISSION 1
 
 
 namespace ch = std::chrono;
@@ -128,14 +132,43 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
+#if FOR_SUBMISSION
     /* Bind to NUMA node 0. */
     //numa_run_on_node(0);
 
+    /* By evaluation, we figured that logical cores 0-9,20-29 belong to NUMA region 0.  Explicitly bind this process to
+     * these logical cores to avoid NUMA.  */
+    {
+        cpu_set_t *cpus = CPU_ALLOC(40);
+        if (not cpus)
+            err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
+        const auto size = CPU_ALLOC_SIZE(40);
+        CPU_ZERO_S(size, cpus);
+        for (int cpu = 0; cpu != 10; ++cpu)
+            CPU_SET_S(cpu, size, cpus);
+        for (int cpu = 20; cpu != 30; ++cpu)
+            CPU_SET_S(cpu, size, cpus);
+        assert(CPU_COUNT_S(size, cpus) == 20 and "allocated incorrect number of logical CPUs");
+
+        /* Bind process. */
+        sched_setaffinity(0 /* this thread */, size, cpus);
+
+        CPU_FREE(cpus);
+    }
+#endif
+
+#if FOR_SUBMISSION
     /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
+#endif
+
+#if FOR_SUBMISSION
+    const auto num_threads = 20;
+#else
+    const auto num_threads = std::thread::hardware_concurrency();
+#endif
 
     /* Create thread pool. */
-    const auto num_threads = 20;
     ctpl::thread_pool thread_pool(num_threads);
     std::cerr << "Create thread pool with " << num_threads << " threads.\n";
 

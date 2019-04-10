@@ -36,6 +36,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+#include <sys/syscall.h>
 
 #ifndef NDEBUG
 #define VERBOSE
@@ -295,10 +297,6 @@ void american_flag_sort_parallel(record * const first, record * const last,
         using std::swap;
         std::ostringstream oss;
 
-        oss.str("");
-        oss << "  Thread " << tid << " running on logical CPU core " << sched_getcpu() << ".\n";
-        std::cerr << oss.str();
-
 #ifndef NDEBUG
 #define WRITE(WHAT) { \
     oss.str(""); \
@@ -351,9 +349,10 @@ void american_flag_sort_parallel(record * const first, record * const last,
                     << (dst - first) << " of bucket " << dst_bucket);
             swap(*src, *dst);
         }
+#undef WRITE
     };
 
-    std::cerr << "Concurrently distribute items into buckets." << std::endl;
+    std::cerr << "Concurrently distribute items into buckets.\n";
 
     {
         auto results = new std::future<void>[NUM_BUCKETS];
@@ -367,8 +366,6 @@ void american_flag_sort_parallel(record * const first, record * const last,
         }
         delete[] results;
     }
-
-    std::cerr << "Items have been distributed to their buckets.  Repair corner cases." << std::endl;
 
 #ifndef NDEBUG
     {
@@ -395,6 +392,7 @@ void american_flag_sort_parallel(record * const first, record * const last,
 #endif
 
 #if 0
+    std::cerr << "Repair corner cases.\n";
     for (std::size_t curr_bucket = 0; curr_bucket != NUM_BUCKETS; ++curr_bucket) {
         using std::swap;
         for (;;) {
@@ -407,6 +405,8 @@ void american_flag_sort_parallel(record * const first, record * const last,
         }
     }
 #endif
+
+    std::cerr << "Items have been distributed to their buckets.\n";
 
     free(heads);
     free(tails);
