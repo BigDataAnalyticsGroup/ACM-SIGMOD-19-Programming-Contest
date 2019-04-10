@@ -297,13 +297,15 @@ void american_flag_sort_parallel(record * const first, record * const last,
         using std::swap;
         std::ostringstream oss;
 
-#ifndef NDEBUG
+#if 0
 #define WRITE(WHAT) { \
     oss.str(""); \
     oss << "  Thread " << tid << " on bucket " << curr_bucket << ": " << WHAT << ".\n"; \
     std::cerr << oss.str(); \
 }
 #else
+        (void) first;
+        (void) tid;
 #define WRITE(WHAT)
 #endif
 
@@ -367,7 +369,7 @@ void american_flag_sort_parallel(record * const first, record * const last,
         delete[] results;
     }
 
-#ifndef NDEBUG
+#if 0
     {
         std::cerr << '\n';
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {

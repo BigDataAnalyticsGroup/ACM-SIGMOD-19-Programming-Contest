@@ -51,9 +51,10 @@
 
 namespace ch = std::chrono;
 
+constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
+constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
+constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
-constexpr std::size_t IN_MEMORY_THRESHOLD = 28L * 1024 * 1024 * 1024; // 28 GiB
-constexpr std::size_t GNU_PARALLEL_THRESHOLD = 0;//11L * 1024 * 1024 * 1024; // 11 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
 
 
@@ -133,9 +134,6 @@ int main(int argc, const char **argv)
     }
 
 #if FOR_SUBMISSION
-    /* Bind to NUMA node 0. */
-    //numa_run_on_node(0);
-
     /* By evaluation, we figured that logical cores 0-9,20-29 belong to NUMA region 0.  Explicitly bind this process to
      * these logical cores to avoid NUMA.  */
     {
@@ -150,7 +148,7 @@ int main(int argc, const char **argv)
             CPU_SET_S(cpu, size, cpus);
         assert(CPU_COUNT_S(size, cpus) == 20 and "allocated incorrect number of logical CPUs");
 
-        /* Bind process. */
+        /* Bind process and all children to the desired logical CPUs. */
         sched_setaffinity(0 /* this thread */, size, cpus);
 
         CPU_FREE(cpus);
@@ -162,6 +160,7 @@ int main(int argc, const char **argv)
     std::ios::sync_with_stdio(false);
 #endif
 
+    /* Determine number of threads to use.  Corresponds to logical cores on one NUMA region. */
 #if FOR_SUBMISSION
     const auto num_threads = 20;
 #else
@@ -179,11 +178,11 @@ int main(int argc, const char **argv)
     struct stat stat_in;
     if (fstat(fd_in, &stat_in))
         err(EXIT_FAILURE, "Could not get status of file '%s'", argv[1]);
-    const std::size_t num_records = stat_in.st_size / sizeof(record);
+    const std::size_t size_in_bytes = std::size_t(stat_in.st_size);
+    const std::size_t num_records = size_in_bytes / sizeof(record);
     const std::size_t slab_size = NUM_BLOCKS_PER_SLAB * stat_in.st_blksize;
-    const std::size_t num_slabs = std::ceil(double(stat_in.st_size) / slab_size);
-
-    std::cerr << "Input file \"" << argv[1] << "\" is " << stat_in.st_size << " bytes large, contains "
+    const std::size_t num_slabs = std::ceil(double(size_in_bytes) / slab_size);
+    std::cerr << "Input file \"" << argv[1] << "\" is " << size_in_bytes << " bytes large, contains "
               << num_records << " records in blocks of size " << stat_in.st_blksize << " bytes.\n";
     std::cerr << "Perform I/O in slabs of " << NUM_BLOCKS_PER_SLAB << " blocks; " << slab_size
               << " bytes per slab and I/O.  " << num_slabs << " slabs in total.\n";
@@ -192,46 +191,57 @@ int main(int argc, const char **argv)
     int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_RDWR, 0644);
     if (fd_out == -1)
         err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
-    if (fallocate(fd_out, /* mode = */ 0, /* offset= */ 0, /* len= */ stat_in.st_size)) {
+    if (fallocate(fd_out, /* mode = */ 0, /* offset= */ 0, /* len= */ size_in_bytes)) {
         if (errno == EOPNOTSUPP) {
-            if (ftruncate(fd_out, stat_in.st_size))
-                err(EXIT_FAILURE, "Could not truncate file '%s' to size %lu", argv[2], stat_in.st_size);
+            if (ftruncate(fd_out, size_in_bytes))
+                err(EXIT_FAILURE, "Could not truncate file '%s' to size %lu", argv[2], size_in_bytes);
         } else {
             err(EXIT_FAILURE, "Could not allocate space for output file '%s'", argv[2]);
         }
     }
 
-    /* Select whether the workload fits into main memory or requires an external memory algorithm. */
-    if (std::size_t(stat_in.st_size) < IN_MEMORY_THRESHOLD) {
+    /* MMap the output file. */
+    void *output = mmap(/* addr=   */ nullptr,
+                        /* length= */ size_in_bytes,
+                        /* prot=   */ PROT_READ|PROT_WRITE,
+                        /* flags=  */ MAP_SHARED,
+                        /* fd=     */ fd_out,
+                        /* offset= */ 0);
+    if (output == MAP_FAILED)
+        err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
+    std::cerr << "Memory map the output file at virtual address " << output << ".\n";
+
+    /* Choose the algorithm based on the file size. */
+    if (size_in_bytes <= FILE_SIZE_SMALL)
+    {
+        /*----- SMALL DATA SET ---------------------------------------------------------------------------------------*/
+        std::cerr << "SMALL DATA SET\n";
+        std::cerr << "Not yet supported.\n";
+        std::exit(EXIT_FAILURE);
+    }
+    else if (size_in_bytes <= FILE_SIZE_MEDIUM)
+    {
+        /*----- MEDIUM DATA SET --------------------------------------------------------------------------------------*/
+        std::cerr << "MEDIUM DATA SET\n";
+
         const auto t_begin_read = ch::high_resolution_clock::now();
 
-        /* MMap the output file. */
-        std::cerr << "Allocate buffer of " << stat_in.st_size << " bytes size.\n";
-        void *buffer = mmap(/* addr=   */ nullptr,
-                            /* length= */ stat_in.st_size,
-                            /* prot=   */ PROT_READ|PROT_WRITE,
-                            /* flags=  */ MAP_SHARED,
-                            /* fd=     */ fd_out,
-                            /* offset= */ 0);
-        if (buffer == MAP_FAILED)
-            err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
-
         /* Spawn threads to concurrently read file. */
-        std::cerr << "Read entire file into the buffer.\n";
+        std::cerr << "Read entire file into the output buffer.\n";
         {
             auto results = new std::future<void>[num_threads];
             const std::size_t num_slabs_per_thread = num_slabs / num_threads;
             const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
             for (unsigned tid = 0; tid != num_threads; ++tid) {
                 const std::size_t offset = tid * count_per_thread;
-                const std::size_t count = tid == num_threads - 1 ? stat_in.st_size - offset : count_per_thread;
+                const std::size_t count = tid == num_threads - 1 ? size_in_bytes - offset : count_per_thread;
                 thread_info ti {
                     .tid = tid,
                     .fd = fd_in,
                     .path = argv[1],
                     .offset = tid * count_per_thread,
                     .count = count,
-                    .buffer = buffer,
+                    .buffer = output,
                     .slab_size = slab_size,
                 };
                 results[tid] = thread_pool.push(partial_read, ti);
@@ -247,7 +257,7 @@ int main(int argc, const char **argv)
 
         /* Sort the records. */
         {
-            record *records = reinterpret_cast<record*>(buffer);
+            record *records = reinterpret_cast<record*>(output);
 
             if (num_records <= 20) {
                 for (auto p = records, end = records + num_records; p != end; ++p)
@@ -256,14 +266,8 @@ int main(int argc, const char **argv)
 
 
             std::cerr << "Sort the data.\n";
-            if (std::size_t(stat_in.st_size) < GNU_PARALLEL_THRESHOLD) {
-                std::cerr << "Using GNU parallel sort.\n";
-                __gnu_parallel::sort(records, records + num_records);
-            } else {
-                std::cerr << "Using my multi-threaded hybrid sort.\n";
-                //my_hybrid_sort_MT(records, records + num_records, thread_pool);
-                american_flag_sort_parallel(records, records + num_records, 0, thread_pool);
-            }
+            //my_hybrid_sort_MT(records, records + num_records, thread_pool);
+            american_flag_sort_parallel(records, records + num_records, 0, thread_pool);
             assert(std::is_sorted(records, records + num_records));
         }
 
@@ -271,8 +275,8 @@ int main(int argc, const char **argv)
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
-        msync(buffer, stat_in.st_size, MS_ASYNC);
-        munmap(buffer, stat_in.st_size);
+        msync(output, size_in_bytes, MS_ASYNC);
+        munmap(output, size_in_bytes);
 
         const auto t_finish = ch::high_resolution_clock::now();
 
@@ -284,17 +288,21 @@ int main(int argc, const char **argv)
             const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_sort).count() / 1e3;
             const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
 
-            const auto throughput_read_mbs = stat_in.st_size / MiB / d_read_s;
-            const auto throughput_sort_mbs = stat_in.st_size / MiB / d_sort_s;
-            const auto throughput_write_mbs = stat_in.st_size / MiB / d_write_s;
+            const auto throughput_read_mbs = size_in_bytes / MiB / d_read_s;
+            const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
+            const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
 
             std::cerr << "read: " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
                       << "sort: " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
                       << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
-    } else {
-        /* TODO Not yet implemented */
-        std::abort();
+    }
+    else
+    {
+        /*----- LARGE DATA SET ---------------------------------------------------------------------------------------*/
+        std::cerr << "LARGE DATA SET\n";
+        std::cerr << "Not yet supported.\n";
+        std::exit(EXIT_FAILURE);
     }
 
     /* Release resources. */
