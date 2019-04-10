@@ -80,6 +80,9 @@ Linux.](https://blog.plenz.com/2014-04/so-you-want-to-write-to-a-file-real-fast.
       program is free to terminate (or crash), the kernel will write the most recent state of the memory to the file on
       disk.
 
+#### Asynchronous I/O
+
+Linux implements the [*POSIX asynchronous I/O* (aio)](https://linux.die.net/man/7/aio)
 
 
 ### Sorting
