@@ -25,7 +25,6 @@
 
 #pragma once
 
-#include "ctpl.h"
 #include "hist.hpp"
 #include "record.hpp"
 
@@ -69,8 +68,7 @@ void american_flag_sort_MT(record * const first, record * const last,
                            const unsigned num_threads, const unsigned digit = 0);
 
 /** Like american_flag_sort_MT, but exploits parallelism from the very beginning. */
-void american_flag_sort_parallel(record * const first, record * const last,
-                                 const unsigned digit, ctpl::thread_pool &thread_pool);
+void american_flag_sort_parallel(record * const first, record * const last, const unsigned digit);
 
 /** Implements Selection Sort.  Finds the smallest item in the remaining unsorted sequence, moves it to the front, and
  * continues at the next item.  */
@@ -83,4 +81,4 @@ void insertion_sort(record *first, record *last);
 void my_hybrid_sort(record *first, record *last);
 
 /** Performs a simple American Flag Sort and falls back to std::sort for small ranges. */
-void my_hybrid_sort_MT(record *first, record *last, ctpl::thread_pool &thread_pool);
+void my_hybrid_sort_MT(record *first, record *last);

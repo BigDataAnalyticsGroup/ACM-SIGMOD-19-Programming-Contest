@@ -23,7 +23,10 @@
 //
 //======================================================================================================================
 
-#include "ctpl.h"
+#ifdef SUBMISSION
+#warning "Compiling submission build"
+#endif
+
 #include "mmap.hpp"
 #include "record.hpp"
 #include "sort.hpp"
@@ -46,7 +49,7 @@
 #include <unistd.h>
 
 
-#define FOR_SUBMISSION 1
+#define READ_CONCURRENT 1
 
 
 namespace ch = std::chrono;
@@ -55,6 +58,7 @@ constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
 constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
+constexpr unsigned NUM_THREADS_READ = 4;
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 256;
 
 
@@ -71,26 +75,28 @@ struct thread_info
 };
 
 /** Load a part of a file into a destination memory location. */
-void partial_read(int, thread_info ti)
+void read_in_slabs(thread_info *ti)
 {
-    auto remaining = ti.count;
-    auto offset = ti.offset;
-    uint8_t *dst = reinterpret_cast<uint8_t*>(ti.buffer);
+    auto remaining = ti->count;
+    auto offset = ti->offset;
+    uint8_t *dst = reinterpret_cast<uint8_t*>(ti->buffer);
 
-    while (ti.slab_size < remaining) {
-        const auto read = pread(ti.fd, &dst[offset], ti.slab_size, offset);
+    while (ti->slab_size <= remaining) {
+        const auto read = pread(ti->fd, &dst[offset], ti->slab_size, offset);
         if (read == -1) {
-            warn("Failed to read %ld bytes from file '%s' at offset %ld", ti.slab_size, ti.path, offset);
+            warn("Failed to read %ld bytes from file '%s' at offset %ld", ti->slab_size, ti->path, offset);
             return;
         }
         remaining -= read;
         offset += read;
+        /* TODO what if pread() did not read an entire slab?  Should we fall back to regular reading or should we try to
+         * recover by reading up to the end of the slab? */
     }
 
     while (remaining) {
-        const auto read = pread(ti.fd, &dst[offset], remaining, offset);
+        const auto read = pread(ti->fd, &dst[offset], remaining, offset);
         if (read == -1) {
-            warn("Failed to read %ld bytes from file '%s' at offset %ld", remaining, ti.path, offset);
+            warn("Failed to read %ld bytes from file '%s' at offset %ld", remaining, ti->path, offset);
             return;
         }
         remaining -= read;
@@ -99,26 +105,28 @@ void partial_read(int, thread_info ti)
 }
 
 /** Write a part of the sorted data to the output file. */
-void partial_write(int, thread_info ti)
+void write_in_slabs(thread_info *ti)
 {
-    auto remaining = ti.count;
-    auto offset = ti.offset;
-    uint8_t *src = reinterpret_cast<uint8_t*>(ti.buffer);
+    auto remaining = ti->count;
+    auto offset = ti->offset;
+    uint8_t *src = reinterpret_cast<uint8_t*>(ti->buffer);
 
-    while (ti.slab_size < remaining) {
-        const auto written = pwrite(ti.fd, &src[offset], ti.slab_size, offset);
+    while (ti->slab_size < remaining) {
+        const auto written = pwrite(ti->fd, &src[offset], ti->slab_size, offset);
         if (written == -1) {
-            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", ti.slab_size, offset, ti.path);
+            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", ti->slab_size, offset, ti->path);
             return;
         }
         remaining -= written;
         offset += written;
+        /* TODO what if pwrite() did not write an entire slab?  Should we fall back to regular writing or should we try
+         * to recover by writing out to the end of the slab? */
     }
 
     while (remaining) {
-        const auto written = pwrite(ti.fd, &src[offset], remaining, offset);
+        const auto written = pwrite(ti->fd, &src[offset], remaining, offset);
         if (written == -1) {
-            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", remaining, offset, ti.path);
+            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", remaining, offset, ti->path);
             return;
         }
         remaining -= written;
@@ -133,7 +141,7 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
-#if FOR_SUBMISSION
+#ifdef SUBMISSION
     /* By evaluation, we figured that logical cores 0-9,20-29 belong to NUMA region 0.  Explicitly bind this process to
      * these logical cores to avoid NUMA.  */
     {
@@ -155,21 +163,17 @@ int main(int argc, const char **argv)
     }
 #endif
 
-#if FOR_SUBMISSION
+#ifdef SUBMISSION
     /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
 #endif
 
     /* Determine number of threads to use.  Corresponds to logical cores on one NUMA region. */
-#if FOR_SUBMISSION
+#ifdef SUBMISSION
     const auto num_threads = 20;
 #else
     const auto num_threads = std::thread::hardware_concurrency();
 #endif
-
-    /* Create thread pool. */
-    ctpl::thread_pool thread_pool(num_threads);
-    std::cerr << "Create thread pool with " << num_threads << " threads.\n";
 
     /* Open input file and get file stats. */
     int fd_in = open(argv[1], O_RDONLY);
@@ -184,8 +188,8 @@ int main(int argc, const char **argv)
     const std::size_t num_slabs = std::ceil(double(size_in_bytes) / slab_size);
     std::cerr << "Input file \"" << argv[1] << "\" is " << size_in_bytes << " bytes large, contains "
               << num_records << " records in blocks of size " << stat_in.st_blksize << " bytes.\n";
-    std::cerr << "Perform I/O in slabs of " << NUM_BLOCKS_PER_SLAB << " blocks; " << slab_size
-              << " bytes per slab and I/O.  " << num_slabs << " slabs in total.\n";
+    //std::cerr << "Perform I/O in slabs of " << NUM_BLOCKS_PER_SLAB << " blocks; " << slab_size
+              //<< " bytes per slab and I/O.  " << num_slabs << " slabs in total.\n";
 
     /* Open output file and allocate sufficient space. */
     int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_RDWR, 0644);
@@ -215,27 +219,29 @@ int main(int argc, const char **argv)
     if (size_in_bytes <= FILE_SIZE_SMALL)
     {
         /*----- SMALL DATA SET ---------------------------------------------------------------------------------------*/
-        std::cerr << "SMALL DATA SET\n";
+        std::cerr << "Detected SMALL data set\n";
         std::cerr << "Not yet supported.\n";
         std::exit(EXIT_FAILURE);
     }
     else if (size_in_bytes <= FILE_SIZE_MEDIUM)
     {
         /*----- MEDIUM DATA SET --------------------------------------------------------------------------------------*/
-        std::cerr << "MEDIUM DATA SET\n";
+        std::cerr << "Detected MEDIUM data set\n";
 
         const auto t_begin_read = ch::high_resolution_clock::now();
 
         /* Spawn threads to concurrently read file. */
-        std::cerr << "Read entire file into the output buffer.\n";
         {
-            auto results = new std::future<void>[num_threads];
-            const std::size_t num_slabs_per_thread = num_slabs / num_threads;
+#if READ_CONCURRENT
+            std::cerr << "Concurrently read entire file into the output buffer.\n";
+            std::array<thread_info, NUM_THREADS_READ> thread_infos;
+            std::array<std::thread, NUM_THREADS_READ> threads;
+            const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
             const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
-            for (unsigned tid = 0; tid != num_threads; ++tid) {
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
                 const std::size_t offset = tid * count_per_thread;
-                const std::size_t count = tid == num_threads - 1 ? size_in_bytes - offset : count_per_thread;
-                thread_info ti {
+                const std::size_t count = tid == NUM_THREADS_READ - 1 ? size_in_bytes - offset : count_per_thread;
+                thread_infos[tid] = thread_info {
                     .tid = tid,
                     .fd = fd_in,
                     .path = argv[1],
@@ -244,13 +250,31 @@ int main(int argc, const char **argv)
                     .buffer = output,
                     .slab_size = slab_size,
                 };
-                results[tid] = thread_pool.push(partial_read, ti);
+                threads[tid] = std::thread(read_in_slabs, &thread_infos[tid]);
             }
 
             /* Join threads. */
-            for (unsigned tid = 0; tid != num_threads; ++tid)
-                results[tid].get();
-            delete[] results;
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+                threads[tid].join();
+#else
+            std::cerr << "Sequentially read entire file into the output buffer.\n";
+            char *buf = reinterpret_cast<char*>(output);
+            auto remaining = size_in_bytes;
+            while (slab_size <= remaining) {
+                const auto num_read = read(fd_in, buf, slab_size);
+                if (num_read == -1)
+                    err(EXIT_FAILURE, "Failed to read %lu bytes from file '%s'", slab_size, argv[1]);
+                remaining -= num_read;
+                buf += num_read;
+            }
+            while (remaining) {
+                const auto num_read = read(fd_in, buf, remaining);
+                if (num_read == -1)
+                    err(EXIT_FAILURE, "Failed to read %lu bytes from file '%s'", remaining, argv[1]);
+                remaining -= num_read;
+                buf += num_read;
+            }
+#endif
         }
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
@@ -259,15 +283,16 @@ int main(int argc, const char **argv)
         {
             record *records = reinterpret_cast<record*>(output);
 
+#ifndef NDEBUG
             if (num_records <= 20) {
                 for (auto p = records, end = records + num_records; p != end; ++p)
                     p->to_ascii(std::cerr);
             }
-
+#endif
 
             std::cerr << "Sort the data.\n";
             //my_hybrid_sort_MT(records, records + num_records, thread_pool);
-            american_flag_sort_parallel(records, records + num_records, 0, thread_pool);
+            american_flag_sort_parallel(records, records + num_records, 0);
             assert(std::is_sorted(records, records + num_records));
         }
 
@@ -300,7 +325,7 @@ int main(int argc, const char **argv)
     else
     {
         /*----- LARGE DATA SET ---------------------------------------------------------------------------------------*/
-        std::cerr << "LARGE DATA SET\n";
+        std::cerr << "LARGE data set\n";
         std::cerr << "Not yet supported.\n";
         std::exit(EXIT_FAILURE);
     }

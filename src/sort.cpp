@@ -31,16 +31,33 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <err.h>
+#include <sched.h>
 #include <sched.h>
 #include <thread>
 #include <thread>
 #include <vector>
 
-#include <unistd.h>
-#include <sys/syscall.h>
 
 #ifndef NDEBUG
 #define VERBOSE
+#endif
+
+
+#ifdef SUBMISSION
+constexpr unsigned NUM_SOCKETS = 2;
+constexpr unsigned NUM_HW_CORES_PER_SOCKET = 10;
+constexpr unsigned NUM_THREADS_PER_HW_CORE = 2;
+constexpr unsigned NUM_LOGICAL_CORES_PER_SOCKET = NUM_HW_CORES_PER_SOCKET * NUM_THREADS_PER_HW_CORE;
+constexpr unsigned NUM_LOGICAL_CORES_TOTAL = NUM_LOGICAL_CORES_PER_SOCKET * NUM_SOCKETS;
+
+constexpr unsigned NUM_THREADS_HISTOGRAM = NUM_LOGICAL_CORES_TOTAL;
+constexpr unsigned NUM_THREADS_PARTITIONING = NUM_LOGICAL_CORES_PER_SOCKET;
+constexpr unsigned NUM_THREADS_RECURSION = NUM_LOGICAL_CORES_TOTAL;
+#else
+constexpr unsigned NUM_THREADS_HISTOGRAM = 8;
+constexpr unsigned NUM_THREADS_PARTITIONING = 8;
+constexpr unsigned NUM_THREADS_RECURSION = 8;
 #endif
 
 
@@ -209,9 +226,8 @@ void my_hybrid_sort_helper(record * const first, record * const last, const unsi
     }
 }
 
-void my_hybrid_sort_MT(record * const first, record * const last, ctpl::thread_pool &thread_pool)
+void my_hybrid_sort_MT(record * const first, record * const last)
 {
-    const unsigned num_threads = thread_pool.size();
     const auto histogram = compute_histogram(first, last, 0);
     const auto buckets = compute_buckets(first, last, histogram);
     american_flag_sort_partitioning(0, histogram, buckets);
@@ -219,7 +235,7 @@ void my_hybrid_sort_MT(record * const first, record * const last, ctpl::thread_p
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
      * sorting from a queue. */
     std::atomic_uint_fast32_t bucket_counter(0);
-    auto recurse = [&](int) {
+    auto recurse = [&]() {
         uint_fast32_t bucket_id;
         while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
             const auto num_records = histogram[bucket_id];
@@ -237,63 +253,67 @@ void my_hybrid_sort_MT(record * const first, record * const last, ctpl::thread_p
         }
     };
 
-    auto results = new std::future<void>[num_threads];
-    for (unsigned tid = 0; tid != num_threads; ++tid)
-        results[tid] = thread_pool.push(recurse);
-    for (unsigned tid = 0; tid != num_threads; ++tid)
-        results[tid].get();
-    delete[] results;
+    std::array<std::thread, NUM_THREADS_RECURSION> threads;
+    for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
+        threads[tid] = std::thread(recurse);
+    for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
+        threads[tid].join();
 }
 
 void my_hybrid_sort(record *first, record *last) { my_hybrid_sort_helper(first, last, 0); }
 
-void american_flag_sort_parallel(record * const first, record * const last,
-                                 const unsigned digit, ctpl::thread_pool &thread_pool)
+void american_flag_sort_parallel(record * const first, record * const last, const unsigned digit)
 {
-    const unsigned num_threads = thread_pool.size();
-    auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[num_threads];
-    auto compute_hist = [histograms](int, int tid, record *first, record *last) {
-        histograms[tid] = compute_histogram(first, last, 0);
-    };
-
-    /* Compute a histogram for each thread region. */
     const auto num_records = last - first;
-    const auto num_records_per_thread = num_records / num_threads;
-    auto thread_first = first;
+    histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
+
+    /* Compute a global histogram by computing a histogram for each thread region. */
     {
-        auto results = new std::future<void>[num_threads];
-        for (unsigned tid = 0; tid != num_threads; ++tid) {
-            auto thread_last = tid == num_threads - 1 ? last : thread_first + num_records_per_thread;
+        auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[NUM_THREADS_HISTOGRAM];
+        auto compute_hist = [histograms](unsigned tid, record *first, record *last) {
+            histograms[tid] = compute_histogram(first, last, 0);
+        };
+        std::array<std::thread, NUM_THREADS_HISTOGRAM> threads;
+        const auto num_records_per_thread = num_records / NUM_THREADS_HISTOGRAM;
+        auto thread_first = first;
+        for (unsigned tid = 0; tid != NUM_THREADS_HISTOGRAM; ++tid) {
+            auto thread_last = tid == NUM_THREADS_HISTOGRAM - 1 ? last : thread_first + num_records_per_thread;
             assert(thread_first >= first);
             assert(thread_first <= thread_last);
             assert(thread_last <= last);
-            results[tid] = thread_pool.push(compute_hist, tid, thread_first, thread_last);
+            threads[tid] = std::thread(compute_hist, tid, thread_first, thread_last);
             thread_first = thread_last;
         }
-        for (unsigned tid = 0; tid != num_threads; ++tid)
-            results[tid].get();
-        delete[] results;
+        for (unsigned tid = 0; tid != NUM_THREADS_HISTOGRAM; ++tid)
+            threads[tid].join();
+        /* Merge the histograms and compute the buckets. */
+        for (unsigned tid = 0; tid != NUM_THREADS_HISTOGRAM; ++tid)
+            histogram += histograms[tid];
+        assert(histogram.count() == num_records and "histogram accumulation failed");
+        delete[] histograms;
     }
 
-    /* Merge the histograms and compute the buckets. */
-    histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
-    for (unsigned tid = 0; tid != num_threads; ++tid)
-        histogram += histograms[tid];
+#ifndef NDEBUG
+    std::cerr << histogram << std::endl;
+#endif
+
+    /* Compute the bucket locations based on the global histogram. */
     const auto buckets = compute_buckets(first, last, histogram);
-    assert(histogram.count() == num_records and "histogram accumulation failed");
+    assert(buckets[NUM_BUCKETS - 1] + histogram[NUM_BUCKETS - 1] == last and "bucket computation failed");
 
     /* Compute the heads and tails of the buckets.  Place the heads in separate cache lines, that are guarded with
      * std::atomic for inter-thread synchronization. */
-    struct __attribute__((aligned(64))) head_t { std::atomic<record*> ptr; };
-    static_assert(sizeof(head_t) == 64, "incorrect size; could lead to incorrect alignment");
-    head_t *heads = static_cast<head_t*>(aligned_alloc(64, NUM_BUCKETS * sizeof(head_t)));
-    head_t *tails = static_cast<head_t*>(aligned_alloc(64, NUM_BUCKETS * sizeof(head_t)));
+    struct __attribute__((aligned(64))) ptr_t { std::atomic<record*> ptr; };
+    static_assert(sizeof(ptr_t) == 64, "incorrect size; could lead to incorrect alignment");
+    ptr_t *heads = static_cast<ptr_t*>(aligned_alloc(64, NUM_BUCKETS * sizeof(ptr_t)));
+    ptr_t *tails = static_cast<ptr_t*>(aligned_alloc(64, NUM_BUCKETS * sizeof(ptr_t)));
     for (std::size_t i = 0; i != NUM_BUCKETS; ++i) {
         new (&heads[i]) std::atomic<record*>(buckets[i]);
         new (&tails[i]) std::atomic<record*>(buckets[i] + histogram[i]);
     }
 
-    auto distribute = [digit, first, heads, tails](int tid, unsigned curr_bucket) {
+    std::atomic_uint_fast32_t bucket_counter(0);
+    auto distribute = [digit, first, heads, tails, histogram, &bucket_counter]() {
         using std::swap;
         std::ostringstream oss;
 
@@ -305,69 +325,121 @@ void american_flag_sort_parallel(record * const first, record * const last,
 }
 #else
         (void) first;
-        (void) tid;
 #define WRITE(WHAT)
 #endif
+        unsigned curr_bucket;
+        while ((curr_bucket = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
+            if (not histogram[curr_bucket]) continue; // skip empty buckets
 
-        /* Acquire next element from current bucket. */
-        auto src = heads[curr_bucket].ptr++;
-        WRITE("Acquired src at offset " << (src - first));
+            /* Acquire next element from current bucket. */
+            auto src = heads[curr_bucket].ptr++;
+            WRITE("Acquired src at offset " << (src - first) << " from bucket " << curr_bucket);
 
-        for (;;) {
-            WRITE("Current src at offset " << (src - first));
+            for (;;) {
+                WRITE("Current src at offset " << (src - first));
 
-            /* Check whether we finished the bucket. */
-            if (src >= tails[curr_bucket].ptr.load()) {
-                heads[curr_bucket].ptr.fetch_sub(1);
-                WRITE("Finished bucket")
-                return; // we are done with this bucket
+                /* Check whether we finished the bucket. */
+                if (src >= tails[curr_bucket].ptr.load()) {
+                    heads[curr_bucket].ptr.fetch_sub(1);
+                    WRITE("Finished bucket " << curr_bucket)
+                    goto bucket_finished; // we are done with this bucket
+                }
+
+                /* Compute destination bucket. */
+                unsigned dst_bucket = src->key[digit];
+                WRITE("Destination bucket is " << dst_bucket);
+
+                /* If the element is already in the right bucket, skip it. */
+                if (dst_bucket == curr_bucket) {
+                    WRITE("Item already in right bucket, skip");
+                    src = heads[curr_bucket].ptr++;
+                    WRITE("Acquired src at offset " << (src - first));
+                    continue;
+                }
+
+                /* Acquire space in the destination bucket. */
+                auto dst = --tails[dst_bucket].ptr;
+                WRITE("Acquired dst at offset " << (dst - first));
+
+                /* Check that the space in the destination bucket is free to swap. */
+                if (dst < heads[dst_bucket].ptr.load()) {
+                    heads[curr_bucket].ptr.fetch_sub(1);
+                    tails[dst_bucket].ptr.fetch_add(1);
+                    WRITE("Destination is already reserved.  Stop here and repair later");
+                    return; // we are done with this bucket
+                }
+
+                WRITE("Swap item at offset " << (src - first) << " of bucket " << curr_bucket << " with item at offset "
+                        << (dst - first) << " of bucket " << dst_bucket);
+                swap(*src, *dst);
             }
-
-            /* Compute destination bucket. */
-            unsigned dst_bucket = src->key[digit];
-            WRITE("Destination bucket is " << dst_bucket);
-
-            /* If the element is already in the right bucket, skip it. */
-            if (dst_bucket == curr_bucket) {
-                WRITE("Item already in right bucket, skip");
-                src = heads[curr_bucket].ptr++;
-                WRITE("Acquired src at offset " << (src - first));
-                continue;
-            }
-
-            /* Acquire space in the destination bucket. */
-            auto dst = --tails[dst_bucket].ptr;
-            WRITE("Acquired dst at offset " << (dst - first));
-
-            /* Check that the space in the destination bucket is free to swap. */
-            if (dst < heads[dst_bucket].ptr.load()) {
-                heads[curr_bucket].ptr.fetch_sub(1);
-                tails[dst_bucket].ptr.fetch_add(1);
-                WRITE("Destination is already reserved.  Stop here and repair later");
-                return; // we are done with this bucket
-            }
-
-            WRITE("Swap item at offset " << (src - first) << " of bucket " << curr_bucket << " with item at offset "
-                    << (dst - first) << " of bucket " << dst_bucket);
-            swap(*src, *dst);
+bucket_finished:;
         }
 #undef WRITE
     };
 
-    std::cerr << "Concurrently distribute items into buckets.\n";
 
+#ifdef SUBMISSION
+    /* By evaluation, we figured that logical cores 0-9,20-29 belong to NUMA region 0.  Explicitly bind this process to
+     * these logical cores to avoid NUMA.  */
     {
-        auto results = new std::future<void>[NUM_BUCKETS];
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            if (histogram[bucket_id])
-                results[bucket_id] = thread_pool.push(distribute, bucket_id);
-        }
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            if (histogram[bucket_id])
-                results[bucket_id].get();
-        }
-        delete[] results;
+        cpu_set_t *cpus = CPU_ALLOC(40);
+        if (not cpus)
+            err(EXIT_FAILURE, "Failed to allocate CPU_SET of 20 CPUs on socket 0");
+        const auto size = CPU_ALLOC_SIZE(40);
+        CPU_ZERO_S(size, cpus);
+        for (int cpu = 0; cpu != 10; ++cpu)
+            CPU_SET_S(cpu, size, cpus);
+        for (int cpu = 20; cpu != 30; ++cpu)
+            CPU_SET_S(cpu, size, cpus);
+        assert(CPU_COUNT_S(size, cpus) == 20 and "allocated incorrect number of logical CPUs");
+
+        /* Bind process and all children to the desired logical CPUs. */
+        sched_setaffinity(0 /* this thread */, size, cpus);
+
+        CPU_FREE(cpus);
     }
+#endif
+
+    std::cerr << "Concurrently distribute items into buckets.\n";
+    {
+        std::array<std::thread, NUM_THREADS_PARTITIONING> threads;
+        for (unsigned tid = 0; tid != NUM_THREADS_PARTITIONING; ++tid)
+            threads[tid] = std::thread(distribute);
+        for (unsigned tid = 0; tid != NUM_THREADS_PARTITIONING; ++tid)
+            threads[tid].join();
+    }
+
+#ifdef SUBMISSION
+    {
+        cpu_set_t *cpus = CPU_ALLOC(40);
+        if (not cpus)
+            err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
+        const auto size = CPU_ALLOC_SIZE(40);
+        CPU_ZERO_S(size, cpus);
+        for (int cpu = 0; cpu != NUM_LOGICAL_CORES_TOTAL; ++cpu)
+            CPU_SET_S(cpu, size, cpus);
+        assert(CPU_COUNT_S(size, cpus) == NUM_LOGICAL_CORES_TOTAL and "allocated incorrect number of logical CPUs");
+
+        /* Bind process and all children to the desired logical CPUs. */
+        sched_setaffinity(0 /* this thread */, size, cpus);
+
+        CPU_FREE(cpus);
+    }
+#endif
+
+#ifndef NDEBUG
+    /* Validate buckets. */
+    for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+        if (not histogram[bucket_id]) continue;
+        for (auto p = buckets[bucket_id], end = p + histogram[bucket_id]; p != end; ++p) {
+            if (p->key[digit] != bucket_id) {
+                std::cerr << "bucket " << bucket_id << " corrupted!!" << std::endl;
+                break;
+            }
+        }
+    }
+#endif
 
 #if 0
     {
@@ -418,8 +490,8 @@ void american_flag_sort_parallel(record * const first, record * const last,
     const auto next_digit = digit + 1; ///< next digit to sort by
     if (next_digit != 10) {
         std::atomic_uint_fast32_t bucket_counter(0);
-        auto recurse = [&](int) {
-            uint_fast32_t bucket_id;
+        auto recurse = [&]() {
+            unsigned bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
                 const auto num_records = histogram[bucket_id];
                 if (num_records > 1) {
@@ -436,11 +508,10 @@ void american_flag_sort_parallel(record * const first, record * const last,
             }
         };
 
-        auto results = new std::future<void>[num_threads];
-        for (unsigned tid = 0; tid != num_threads; ++tid)
-            results[tid] = thread_pool.push(recurse);
-        for (unsigned tid = 0; tid != num_threads; ++tid)
-            results[tid].get();
-        delete[] results;
+        std::array<std::thread, NUM_THREADS_RECURSION> threads;
+        for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
+            threads[tid] = std::thread(recurse);
+        for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
+            threads[tid].join();
     }
 }
