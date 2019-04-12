@@ -97,22 +97,23 @@ void readall(int fd, uint8_t *buf, std::size_t count, off_t offset)
 }
 
 /** Read from fd count many bytes, starting at offset, and write them to buf. */
-void read_concurrent(int fd, uint8_t *buf, std::size_t count, off_t offset)
+void read_concurrent(int fd, void *buf, std::size_t count, off_t offset)
 {
+    uint8_t *dst = reinterpret_cast<uint8_t*>(buf);
     struct stat st;
     if (fstat(fd, &st))
         err(EXIT_FAILURE, "Could not get status of fd %d", fd);
     const std::size_t slab_size = NUM_BLOCKS_PER_SLAB * st.st_blksize;
 
     if (count < 2 * slab_size) {
-        readall(fd, buf, count, offset);
+        readall(fd, dst, count, offset);
     } else {
         /* Read unaligned start. */
         off_t unaligned = offset - (offset % slab_size);
         if (unaligned) {
-            readall(fd, buf, unaligned, offset);
+            readall(fd, dst, unaligned, offset);
             count -= unaligned;
-            buf += unaligned;
+            dst += unaligned;
             offset += unaligned;
         }
 
@@ -121,9 +122,9 @@ void read_concurrent(int fd, uint8_t *buf, std::size_t count, off_t offset)
         const std::size_t num_slabs = std::ceil(double(count) / slab_size);
         const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
         const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
-        for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid, buf += count_per_thread, offset += count_per_thread) {
+        for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid, dst += count_per_thread, offset += count_per_thread) {
             const std::size_t thread_count = tid == NUM_THREADS_READ - 1 ? count - offset : count_per_thread;
-            threads[tid] = std::thread(readall, fd, buf, thread_count, offset);
+            threads[tid] = std::thread(readall, fd, dst, thread_count, offset);
         }
         for (auto &t : threads)
             t.join();
@@ -280,30 +281,7 @@ int main(int argc, const char **argv)
         const auto t_begin_read = ch::high_resolution_clock::now();
 
         /* Spawn threads to concurrently read file. */
-        {
-            std::cerr << "Concurrently read entire file into the output buffer.\n";
-            std::array<thread_info, NUM_THREADS_READ> thread_infos;
-            std::array<std::thread, NUM_THREADS_READ> threads;
-            const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
-            const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
-                const std::size_t offset = tid * count_per_thread;
-                const std::size_t count = tid == NUM_THREADS_READ - 1 ? size_in_bytes - offset : count_per_thread;
-                thread_infos[tid] = thread_info {
-                    .fd = fd_in,
-                    .path = argv[1],
-                    .offset = tid * count_per_thread,
-                    .count = count,
-                    .buffer = output,
-                    .slab_size = slab_size,
-                };
-                threads[tid] = std::thread(read_in_slabs, &thread_infos[tid]);
-            }
-
-            /* Join threads. */
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
-                threads[tid].join();
-        }
+        read_concurrent(fd_in, output, size_in_bytes, 0);
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
