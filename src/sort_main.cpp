@@ -57,9 +57,11 @@ namespace ch = std::chrono;
 
 constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
 constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
+//constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
 constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
+//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -84,15 +86,16 @@ struct thread_info
     std::size_t slab_size; ///< the size of a slab, the granule at which I/O is performed; a multiple of the preferred block size
 };
 
-void readall(int fd, uint8_t *buf, std::size_t count, off_t offset)
+void readall(int fd, void *buf, std::size_t count, off_t offset)
 {
+    uint8_t *dst = reinterpret_cast<uint8_t*>(buf);
     while (count) {
-        const int bytes_read = pread(fd, buf, count, offset);
+        const int bytes_read = pread(fd, dst, count, offset);
         if (bytes_read == -1)
             err(EXIT_FAILURE, "Could not read from fd %d", fd);
         count -= bytes_read;
         offset += bytes_read;
-        buf += bytes_read;
+        dst += bytes_read;
     }
 }
 
@@ -109,7 +112,7 @@ void read_concurrent(int fd, void *buf, std::size_t count, off_t offset)
         readall(fd, dst, count, offset);
     } else {
         /* Read unaligned start. */
-        off_t unaligned = offset - (offset % slab_size);
+        off_t unaligned = slab_size - (offset % slab_size);
         if (unaligned) {
             readall(fd, dst, unaligned, offset);
             count -= unaligned;
@@ -122,72 +125,14 @@ void read_concurrent(int fd, void *buf, std::size_t count, off_t offset)
         const std::size_t num_slabs = std::ceil(double(count) / slab_size);
         const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
         const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
-        for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid, dst += count_per_thread, offset += count_per_thread) {
-            const std::size_t thread_count = tid == NUM_THREADS_READ - 1 ? count - offset : count_per_thread;
+        for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
+            const std::size_t thread_count = tid == NUM_THREADS_READ - 1 ? count - (NUM_THREADS_READ - 1) * count_per_thread : count_per_thread;
             threads[tid] = std::thread(readall, fd, dst, thread_count, offset);
+            dst += thread_count;
+            offset += thread_count;
         }
         for (auto &t : threads)
             t.join();
-    }
-}
-
-/** Load a part of a file into a destination memory location. */
-void read_in_slabs(thread_info *ti)
-{
-    auto remaining = ti->count;
-    auto offset = ti->offset;
-    uint8_t *dst = reinterpret_cast<uint8_t*>(ti->buffer);
-
-    while (ti->slab_size <= remaining) {
-        const auto read = pread(ti->fd, &dst[offset], ti->slab_size, offset);
-        if (read == -1) {
-            warn("Failed to read %ld bytes from file '%s' at offset %ld", ti->slab_size, ti->path, offset);
-            return;
-        }
-        remaining -= read;
-        offset += read;
-        /* TODO what if pread() did not read an entire slab?  Should we fall back to regular reading or should we try to
-         * recover by reading up to the end of the slab? */
-    }
-
-    while (remaining) {
-        const auto read = pread(ti->fd, &dst[offset], remaining, offset);
-        if (read == -1) {
-            warn("Failed to read %ld bytes from file '%s' at offset %ld", remaining, ti->path, offset);
-            return;
-        }
-        remaining -= read;
-        offset += read;
-    }
-}
-
-/** Write a part of the sorted data to the output file. */
-void write_in_slabs(thread_info *ti)
-{
-    auto remaining = ti->count;
-    auto offset = ti->offset;
-    uint8_t *src = reinterpret_cast<uint8_t*>(ti->buffer);
-
-    while (ti->slab_size < remaining) {
-        const auto written = pwrite(ti->fd, &src[offset], ti->slab_size, offset);
-        if (written == -1) {
-            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", ti->slab_size, offset, ti->path);
-            return;
-        }
-        remaining -= written;
-        offset += written;
-        /* TODO what if pwrite() did not write an entire slab?  Should we fall back to regular writing or should we try
-         * to recover by writing out to the end of the slab? */
-    }
-
-    while (remaining) {
-        const auto written = pwrite(ti->fd, &src[offset], remaining, offset);
-        if (written == -1) {
-            warn("Failed to write %ld bytes from buffer at offset %ld to file '%s'", remaining, offset, ti->path);
-            return;
-        }
-        remaining -= written;
-        offset += written;
     }
 }
 
@@ -234,12 +179,8 @@ int main(int argc, const char **argv)
         err(EXIT_FAILURE, "Could not get status of file '%s'", argv[1]);
     const std::size_t size_in_bytes = std::size_t(stat_in.st_size);
     const std::size_t num_records = size_in_bytes / sizeof(record);
-    const std::size_t slab_size = NUM_BLOCKS_PER_SLAB * stat_in.st_blksize;
-    const std::size_t num_slabs = std::ceil(double(size_in_bytes) / slab_size);
     std::cerr << "Input file \"" << argv[1] << "\" is " << size_in_bytes << " bytes large, contains "
               << num_records << " records in blocks of size " << stat_in.st_blksize << " bytes.\n";
-    //std::cerr << "Perform I/O in slabs of " << NUM_BLOCKS_PER_SLAB << " blocks; " << slab_size
-              //<< " bytes per slab and I/O.  " << num_slabs << " slabs in total.\n";
 
     /* Open output file and allocate sufficient space. */
     int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_RDWR, 0644);
@@ -369,16 +310,15 @@ int main(int argc, const char **argv)
             }
         }
 
-        const std::size_t num_records_to_partition =
-            size_in_bytes < IN_MEMORY_BUFFER_SIZE ?
-            size_in_bytes / sizeof(record) :
+        const std::size_t num_records_to_partition = size_in_bytes <= IN_MEMORY_BUFFER_SIZE ? 0 :
             (size_in_bytes - IN_MEMORY_BUFFER_SIZE) / sizeof(record);
-
-        std::cerr << "Partition the first " << num_records_to_partition << " records ("
-                  << num_records_to_partition * sizeof(record) / double(1024 * 1024) << " MiB).\n";
+        const std::size_t num_bytes_to_partition = num_records_to_partition * sizeof(record);
 
         /* Read first part and partition. */
-        {
+        if (num_records_to_partition) {
+            std::cerr << "Read and partition the first " << num_records_to_partition << " records ("
+                      << num_bytes_to_partition << " bytes).\n";
+
             auto partition = [fd_in, argv, bucket_files](std::size_t offset, std::size_t count) {
                 constexpr std::size_t RECORDS_PER_BUFFER = 10000;
                 record buf[RECORDS_PER_BUFFER];
@@ -429,55 +369,43 @@ int main(int argc, const char **argv)
 
         const auto t_begin_read = ch::high_resolution_clock::now();
 
-        /* Read the remaining portion of the file. */
-        const std::size_t offset_read = num_records_to_partition * sizeof(record);
+        /* Concurrently read the remaining portion of the file. */
+        std::cerr << "Read the remaining " << (num_records - num_records_to_partition) << " records ("
+                  << (size_in_bytes - num_bytes_to_partition) << " bytes).\n";
         void *tmp = mmap(nullptr, IN_MEMORY_BUFFER_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
                          /* fd= */ -1, 0);
         if (tmp == MAP_FAILED)
             err(EXIT_FAILURE, "Failed to map temporary read buffer");
-
-        /* Spawn threads to concurrently read the remainder of the input file. */
-        {
-            auto read = [](std::size_t offset, std::size_t num_bytes) {
-            };
-
-            std::array<std::thread, NUM_THREADS_READ> threads;
-            const std::size_t bytes_per_thread = IN_MEMORY_BUFFER_SIZE / NUM_THREADS_READ;
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
-                const std::size_t offset = tid * bytes_per_thread;
-                const std::size_t num_bytes = tid == NUM_THREADS_READ - 1 ? IN_MEMORY_BUFFER_SIZE - offset : bytes_per_thread;
-                threads[tid] = std::thread(read, offset, num_bytes);
-            }
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
-                threads[tid].join();
-        }
+        read_concurrent(fd_in, tmp, IN_MEMORY_BUFFER_SIZE, num_records_to_partition * sizeof(record));
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            if (fclose(bucket_files[bucket_id]))
-                warn("Failed to close output file");
-            free(file_buffers[bucket_id]);
-        }
+        std::cerr << "TODO: Sort the data.\n";
 
         /* Report times and throughput. */
         {
             constexpr unsigned long MiB = 1024 * 1024;
 
             const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_begin_read - t_begin_partition).count() / 1e3;
-            //const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
+            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
             //const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_sort).count() / 1e3;
             //const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
 
             const auto throughput_partition_mbs = num_records_to_partition * sizeof(record) / MiB / d_partition_s;
-            //const auto throughput_read_mbs = size_in_bytes / MiB / d_read_s;
+            const auto throughput_read_mbs = (size_in_bytes - num_records_to_partition * sizeof(record)) / MiB / d_read_s;
             //const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
             //const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
 
-            std::cerr << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n";
-                      //<< "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
+            std::cerr << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n"
+                      << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n";
                       //<< "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
                       //<< "write:     " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
+        }
+
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            if (fclose(bucket_files[bucket_id]))
+                warn("Failed to close output file");
+            free(file_buffers[bucket_id]);
         }
 
         munmap(tmp, IN_MEMORY_BUFFER_SIZE);

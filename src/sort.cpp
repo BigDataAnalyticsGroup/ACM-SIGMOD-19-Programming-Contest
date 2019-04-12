@@ -29,6 +29,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <err.h>
@@ -264,10 +265,13 @@ void my_hybrid_sort(record *first, record *last) { my_hybrid_sort_helper(first, 
 
 void american_flag_sort_parallel(record * const first, record * const last, const unsigned digit)
 {
+    using namespace std::chrono;
+
     const auto num_records = last - first;
     histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
 
     /* Compute a global histogram by computing a histogram for each thread region. */
+    const auto t_hist_begin = high_resolution_clock::now();
     {
         auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[NUM_THREADS_HISTOGRAM];
         auto compute_hist = [histograms](unsigned tid, record *first, record *last) {
@@ -292,10 +296,11 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
         assert(histogram.count() == num_records and "histogram accumulation failed");
         delete[] histograms;
     }
-
 #ifndef NDEBUG
     std::cerr << histogram << std::endl;
 #endif
+
+    const auto t_bucket_begin = high_resolution_clock::now();
 
     /* Compute the bucket locations based on the global histogram. */
     const auto buckets = compute_buckets(first, last, histogram);
@@ -312,70 +317,50 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
         new (&tails[i]) std::atomic<record*>(buckets[i] + histogram[i]);
     }
 
+    const auto t_partition_begin = high_resolution_clock::now();
+
     std::atomic_uint_fast32_t bucket_counter(0);
-    auto distribute = [digit, first, heads, tails, histogram, &bucket_counter]() {
+    auto distribute = [digit, heads, tails, histogram, &bucket_counter]() {
         using std::swap;
         std::ostringstream oss;
 
-#if 0
-#define WRITE(WHAT) { \
-    oss.str(""); \
-    oss << "  Thread " << tid << " on bucket " << curr_bucket << ": " << WHAT << ".\n"; \
-    std::cerr << oss.str(); \
-}
-#else
-        (void) first;
-#define WRITE(WHAT)
-#endif
         unsigned curr_bucket;
         while ((curr_bucket = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
             if (not histogram[curr_bucket]) continue; // skip empty buckets
 
             /* Acquire next element from current bucket. */
             auto src = heads[curr_bucket].ptr++;
-            WRITE("Acquired src at offset " << (src - first) << " from bucket " << curr_bucket);
 
             for (;;) {
-                WRITE("Current src at offset " << (src - first));
-
                 /* Check whether we finished the bucket. */
-                if (src >= tails[curr_bucket].ptr.load()) {
-                    heads[curr_bucket].ptr.fetch_sub(1);
-                    WRITE("Finished bucket " << curr_bucket)
+                if (src >= tails[curr_bucket].ptr.load()) { // this slot was or will be written by another thread
+                    heads[curr_bucket].ptr.fetch_sub(1); // reset own head pointer to the src slot
                     goto bucket_finished; // we are done with this bucket
                 }
 
                 /* Compute destination bucket. */
                 unsigned dst_bucket = src->key[digit];
-                WRITE("Destination bucket is " << dst_bucket);
 
                 /* If the element is already in the right bucket, skip it. */
                 if (dst_bucket == curr_bucket) {
-                    WRITE("Item already in right bucket, skip");
                     src = heads[curr_bucket].ptr++;
-                    WRITE("Acquired src at offset " << (src - first));
                     continue;
                 }
 
                 /* Acquire space in the destination bucket. */
                 auto dst = --tails[dst_bucket].ptr;
-                WRITE("Acquired dst at offset " << (dst - first));
 
                 /* Check that the space in the destination bucket is free to swap. */
-                if (dst < heads[dst_bucket].ptr.load()) {
-                    heads[curr_bucket].ptr.fetch_sub(1);
-                    tails[dst_bucket].ptr.fetch_add(1);
-                    WRITE("Destination is already reserved.  Stop here and repair later");
+                if (dst < heads[dst_bucket].ptr.load()) { // this slot was or will be written by the bucket owner
+                    heads[curr_bucket].ptr.fetch_sub(1); // reset own head
+                    tails[dst_bucket].ptr.fetch_add(1); // reset destination tail
                     return; // we are done with this bucket
                 }
 
-                WRITE("Swap item at offset " << (src - first) << " of bucket " << curr_bucket << " with item at offset "
-                        << (dst - first) << " of bucket " << dst_bucket);
                 swap(*src, *dst);
             }
 bucket_finished:;
         }
-#undef WRITE
     };
 
 
@@ -428,6 +413,25 @@ bucket_finished:;
     }
 #endif
 
+    const auto t_repair_begin = high_resolution_clock::now();
+
+    /* There can be at most one incorrect item per bucket.  Go through all buckets, see if there is an incorrect item,
+     * and rotate it to its correct position in American Flag Sort style.  Repeat until the bucket is correct.  Proceed
+     * with next bucket. */
+    for (std::size_t curr_bucket = 0; curr_bucket != NUM_BUCKETS; ++curr_bucket) {
+        using std::swap;
+
+        auto src = heads[curr_bucket].ptr.fetch_add(1, std::memory_order_relaxed);
+        while (src < tails[curr_bucket].ptr.load()) {
+            auto dst_bucket = src->key[digit];
+            if (dst_bucket == curr_bucket) {
+                src = heads[curr_bucket].ptr.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            auto dst = heads[dst_bucket].ptr.fetch_add(1, std::memory_order_relaxed);
+            swap(*src, *dst);
+        }
+    }
 #ifndef NDEBUG
     /* Validate buckets. */
     for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
@@ -441,47 +445,12 @@ bucket_finished:;
     }
 #endif
 
-#if 0
-    {
-        std::cerr << '\n';
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            if (not histogram[bucket_id]) continue;
-            std::cerr << "[";
-            std::cerr << " (head at offset " << (heads[bucket_id].ptr - buckets[bucket_id])
-                      << ", tail at offset " << (tails[bucket_id].ptr - buckets[bucket_id]) << ")\n";
-            for (auto p = buckets[bucket_id], end = p + histogram[bucket_id]; p != end; ++p) {
-                if (heads[bucket_id].ptr > tails[bucket_id].ptr)
-                    std::cerr << "X";
-                else
-                    std::cerr << " ";
-                if (p->key[digit] != bucket_id)
-                    std::cerr << "--> ";
-                else
-                    std::cerr << "    ";
-                p->to_ascii(std::cerr);
-            }
-            std::cerr << "]\n";
-        }
-    }
-#endif
-
-#if 0
-    std::cerr << "Repair corner cases.\n";
-    for (std::size_t curr_bucket = 0; curr_bucket != NUM_BUCKETS; ++curr_bucket) {
-        using std::swap;
-        for (;;) {
-            auto src = heads[curr_bucket].ptr.load(std::memory_order_relaxed);
-            auto dst_bucket = src->key[digit];
-            if (dst_bucket == curr_bucket)
-                break;
-            auto dst = heads[dst_bucket].ptr.fetch_add(1, std::memory_order_relaxed);
-            swap(*src, *dst);
-        }
-    }
-#endif
+    const auto t_recurse_begin = high_resolution_clock::now();
 
     free(heads);
     free(tails);
+
+    std::cerr << "Recurse.\n";
 
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
      * sorting from a queue. */
@@ -512,4 +481,12 @@ bucket_finished:;
         for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
             threads[tid].join();
     }
+
+    const auto t_end = high_resolution_clock::now();
+
+    std::cerr << "histogram: " << duration_cast<milliseconds>(t_bucket_begin - t_hist_begin).count() / 1e3 << " s\n"
+              << "buckets:   " << duration_cast<milliseconds>(t_partition_begin - t_bucket_begin).count() / 1e3 << " s\n"
+              << "partition: " << duration_cast<milliseconds>(t_repair_begin - t_partition_begin).count() / 1e3 << " s\n"
+              << "repair:    " << duration_cast<milliseconds>(t_recurse_begin - t_repair_begin).count() / 1e3 << " s\n"
+              << "recurse:   " << duration_cast<milliseconds>(t_end - t_recurse_begin).count() / 1e3 << " s\n";
 }
