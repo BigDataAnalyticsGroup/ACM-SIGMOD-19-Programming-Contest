@@ -401,7 +401,7 @@ bucket_finished:;
     }
 #endif
 
-    std::cerr << "Concurrently distribute items into buckets.\n";
+    /* Concurrently distribute items into buckets. */
     {
         std::array<std::thread, NUM_THREADS_PARTITIONING> threads;
         for (unsigned tid = 0; tid != NUM_THREADS_PARTITIONING; ++tid)
@@ -479,8 +479,6 @@ bucket_finished:;
         }
     }
 #endif
-
-    std::cerr << "Items have been distributed to their buckets.\n";
 
     free(heads);
     free(tails);
