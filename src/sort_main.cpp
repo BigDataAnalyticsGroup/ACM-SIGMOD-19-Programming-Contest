@@ -238,7 +238,6 @@ int main(int argc, const char **argv)
 #endif
 
             std::cerr << "Sort the data.\n";
-            //my_hybrid_sort_MT(records, records + num_records, thread_pool);
             american_flag_sort_parallel(records, records + num_records, 0);
             assert(std::is_sorted(records, records + num_records));
         }
@@ -382,7 +381,13 @@ int main(int argc, const char **argv)
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
-        std::cerr << "TODO: Sort the data.\n";
+        /* Sort the records in-memory. */
+        std::cerr << "Sort " << num_records_to_sort << " records in-memory.\n";
+        {
+            record *records = reinterpret_cast<record*>(tmp);
+            american_flag_sort_parallel(records, records + num_records_to_sort, 0);
+            assert(std::is_sorted(records, records + num_records_to_sort));
+        }
 
         /* Report times and throughput. */
         {
