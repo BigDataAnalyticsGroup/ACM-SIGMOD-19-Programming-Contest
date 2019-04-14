@@ -56,12 +56,12 @@
 namespace ch = std::chrono;
 
 constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
-constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
-//constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
+//constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
+constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
-//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
+//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -281,6 +281,34 @@ int main(int argc, const char **argv)
          * Again, we should be able to save the write of the final 30GB because of mmap; the kernel will do this for us.
          */
 
+        const std::size_t num_records_to_sort = std::min(size_in_bytes, IN_MEMORY_BUFFER_SIZE) / sizeof(record);
+        const std::size_t num_bytes_to_sort = num_records_to_sort * sizeof(record);
+        const std::size_t num_records_to_partition = size_in_bytes <= IN_MEMORY_BUFFER_SIZE ? 0 :
+            num_records - num_records_to_sort;
+        const std::size_t num_bytes_to_partition = num_records_to_partition * sizeof(record);
+        assert(num_records_to_partition < num_records);
+        assert(num_bytes_to_sort <= size_in_bytes);
+        assert(num_bytes_to_partition < size_in_bytes);
+
+        const auto t_begin_read = ch::high_resolution_clock::now();
+
+        /* Concurrently read the remaining portion of the file. */
+        std::cerr << "Read the first " << num_records_to_sort << " records (" << num_bytes_to_sort << " bytes).\n";
+        void *tmp = mmap(nullptr, num_bytes_to_sort, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, /* fd= */ -1, 0);
+        if (tmp == MAP_FAILED)
+            err(EXIT_FAILURE, "Failed to map temporary read buffer");
+        read_concurrent(fd_in, tmp, num_bytes_to_sort, 0);
+
+        const auto t_begin_sort = ch::high_resolution_clock::now();
+
+        /* Sort the records in-memory. */
+        std::cerr << "Sort " << num_records_to_sort << " records in-memory.\n";
+        {
+            record *records = reinterpret_cast<record*>(tmp);
+            american_flag_sort_parallel(records, records + num_records_to_sort, 0);
+            assert(std::is_sorted(records, records + num_records_to_sort));
+        }
+
         const auto t_begin_partition = ch::high_resolution_clock::now();
 
         /* Create the output files for the buckets. */
@@ -309,14 +337,11 @@ int main(int argc, const char **argv)
             }
         }
 
-        const std::size_t num_records_to_partition = size_in_bytes <= IN_MEMORY_BUFFER_SIZE ? 0 :
-            (size_in_bytes - IN_MEMORY_BUFFER_SIZE) / sizeof(record);
-        const std::size_t num_bytes_to_partition = num_records_to_partition * sizeof(record);
 
         /* Read first part and partition. */
         if (num_records_to_partition) {
-            std::cerr << "Read and partition the first " << num_records_to_partition << " records ("
-                      << num_bytes_to_partition << " bytes).\n";
+            std::cerr << "Read and partition the remaining " << num_records_to_partition << " records ("
+                      << num_bytes_to_partition << " bytes), starting at offset " << num_bytes_to_sort << ".\n";
 
             auto partition = [fd_in, argv, bucket_files](std::size_t offset, std::size_t count) {
                 constexpr std::size_t RECORDS_PER_BUFFER = 10000;
@@ -357,36 +382,16 @@ int main(int argc, const char **argv)
 
             std::array<std::thread, NUM_THREADS_PARTITION> threads;
             const std::size_t count_per_thread = num_records_to_partition / NUM_THREADS_PARTITION;
+            std::size_t offset = num_records_to_sort;
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid) {
-                const std::size_t offset = tid * count_per_thread;
-                const std::size_t count = tid == NUM_THREADS_PARTITION - 1 ? num_records_to_partition - offset : count_per_thread;
+                const std::size_t count = tid == NUM_THREADS_PARTITION - 1 ? num_records - offset : count_per_thread;
+                std::cerr << "Thread " << tid << " reads and partitions " << count << " records starting with record "
+                          << offset << ".\n";
                 threads[tid] = std::thread(partition, offset * sizeof(record), count);
+                offset += count;
             }
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid)
                 threads[tid].join();
-        }
-
-        const auto t_begin_read = ch::high_resolution_clock::now();
-
-        /* Concurrently read the remaining portion of the file. */
-        const std::size_t num_records_to_sort = num_records - num_records_to_partition;
-        assert(num_records_to_sort * sizeof(record) == size_in_bytes - num_bytes_to_partition);
-        std::cerr << "Read the remaining " << num_records_to_sort << " records ("
-                  << (size_in_bytes - num_bytes_to_partition) << " bytes).\n";
-        void *tmp = mmap(nullptr, num_records_to_sort * sizeof(record), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
-                         /* fd= */ -1, 0);
-        if (tmp == MAP_FAILED)
-            err(EXIT_FAILURE, "Failed to map temporary read buffer");
-        read_concurrent(fd_in, tmp, num_records_to_sort * sizeof(record), num_records_to_partition * sizeof(record));
-
-        const auto t_begin_sort = ch::high_resolution_clock::now();
-
-        /* Sort the records in-memory. */
-        std::cerr << "Sort " << num_records_to_sort << " records in-memory.\n";
-        {
-            record *records = reinterpret_cast<record*>(tmp);
-            american_flag_sort_parallel(records, records + num_records_to_sort, 0);
-            assert(std::is_sorted(records, records + num_records_to_sort));
         }
 
         const auto t_end = ch::high_resolution_clock::now();
@@ -395,19 +400,19 @@ int main(int argc, const char **argv)
         {
             constexpr unsigned long MiB = 1024 * 1024;
 
-            const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_begin_read - t_begin_partition).count() / 1e3;
-            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
-            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_sort).count() / 1e3;
+            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_read - t_begin_sort).count() / 1e3;
+            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_partition - t_begin_sort).count() / 1e3;
+            const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_partition).count() / 1e3;
             //const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
 
-            const auto throughput_partition_mbs = num_records_to_partition * sizeof(record) / MiB / d_partition_s;
-            const auto throughput_read_mbs = (size_in_bytes - num_records_to_partition * sizeof(record)) / MiB / d_read_s;
-            const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
+            const auto throughput_read_mbs = num_bytes_to_sort / MiB / d_read_s;
+            const auto throughput_sort_mbs = num_bytes_to_sort / MiB / d_sort_s;
+            const auto throughput_partition_mbs = num_bytes_to_partition / MiB / d_partition_s;
             //const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
 
-            std::cerr << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n"
-                      << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
-                      << "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n";
+            std::cerr << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
+                      << "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
+                      << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n";
                       //<< "write:     " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
 
@@ -417,7 +422,7 @@ int main(int argc, const char **argv)
             free(file_buffers[bucket_id]);
         }
 
-        munmap(tmp, IN_MEMORY_BUFFER_SIZE);
+        munmap(tmp, num_bytes_to_sort);
         std::cerr << "Not yet supported.\n";
         std::exit(EXIT_FAILURE);
     }
