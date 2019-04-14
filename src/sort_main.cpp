@@ -370,13 +370,15 @@ int main(int argc, const char **argv)
         const auto t_begin_read = ch::high_resolution_clock::now();
 
         /* Concurrently read the remaining portion of the file. */
-        std::cerr << "Read the remaining " << (num_records - num_records_to_partition) << " records ("
+        const std::size_t num_records_to_sort = num_records - num_records_to_partition;
+        assert(num_records_to_sort * sizeof(record) == size_in_bytes - num_bytes_to_partition);
+        std::cerr << "Read the remaining " << num_records_to_sort << " records ("
                   << (size_in_bytes - num_bytes_to_partition) << " bytes).\n";
-        void *tmp = mmap(nullptr, IN_MEMORY_BUFFER_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
+        void *tmp = mmap(nullptr, num_records_to_sort * sizeof(record), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
                          /* fd= */ -1, 0);
         if (tmp == MAP_FAILED)
             err(EXIT_FAILURE, "Failed to map temporary read buffer");
-        read_concurrent(fd_in, tmp, IN_MEMORY_BUFFER_SIZE, num_records_to_partition * sizeof(record));
+        read_concurrent(fd_in, tmp, num_records_to_sort * sizeof(record), num_records_to_partition * sizeof(record));
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
