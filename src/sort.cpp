@@ -450,8 +450,6 @@ bucket_finished:;
     free(heads);
     free(tails);
 
-    std::cerr << "Recurse.\n";
-
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
      * sorting from a queue. */
     const auto next_digit = digit + 1; ///< next digit to sort by
