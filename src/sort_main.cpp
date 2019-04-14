@@ -56,12 +56,12 @@
 namespace ch = std::chrono;
 
 constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
-//constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
-constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
+constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
+//constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
-//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
+//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -299,15 +299,17 @@ int main(int argc, const char **argv)
             err(EXIT_FAILURE, "Failed to map temporary read buffer");
         read_concurrent(fd_in, tmp, num_bytes_to_sort, 0);
 
-        const auto t_begin_sort = ch::high_resolution_clock::now();
+        ch::high_resolution_clock::time_point t_begin_sort, t_end_sort;
 
         /* Sort the records in-memory. */
-        std::cerr << "Sort " << num_records_to_sort << " records in-memory.\n";
-        {
+        std::cerr << "Sort " << num_records_to_sort << " records in-memory in a separate thread.\n";
+        std::thread thread_sort = std::thread([&]() {
+            t_begin_sort = ch::high_resolution_clock::now();
             record *records = reinterpret_cast<record*>(tmp);
             american_flag_sort_parallel(records, records + num_records_to_sort, 0);
             assert(std::is_sorted(records, records + num_records_to_sort));
-        }
+            t_end_sort = ch::high_resolution_clock::now();
+        });
 
         const auto t_begin_partition = ch::high_resolution_clock::now();
 
@@ -336,7 +338,6 @@ int main(int argc, const char **argv)
                 bucket_files[bucket_id] = file;
             }
         }
-
 
         /* Read first part and partition. */
         if (num_records_to_partition) {
@@ -385,8 +386,6 @@ int main(int argc, const char **argv)
             std::size_t offset = num_records_to_sort;
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid) {
                 const std::size_t count = tid == NUM_THREADS_PARTITION - 1 ? num_records - offset : count_per_thread;
-                std::cerr << "Thread " << tid << " reads and partitions " << count << " records starting with record "
-                          << offset << ".\n";
                 threads[tid] = std::thread(partition, offset * sizeof(record), count);
                 offset += count;
             }
@@ -394,16 +393,20 @@ int main(int argc, const char **argv)
                 threads[tid].join();
         }
 
+        /* TODO For each partition, read it, sort it, merge with sorted records, and write out to output file. */
+        thread_sort.join();
+
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Report times and throughput. */
         {
             constexpr unsigned long MiB = 1024 * 1024;
 
-            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_read - t_begin_sort).count() / 1e3;
-            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_partition - t_begin_sort).count() / 1e3;
+            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_partition - t_begin_read).count() / 1e3;
+            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_end_sort - t_begin_sort).count() / 1e3;
             const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_partition).count() / 1e3;
             //const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
+            const auto d_total_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_read).count() / 1e3;
 
             const auto throughput_read_mbs = num_bytes_to_sort / MiB / d_read_s;
             const auto throughput_sort_mbs = num_bytes_to_sort / MiB / d_sort_s;
@@ -412,8 +415,9 @@ int main(int argc, const char **argv)
 
             std::cerr << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
                       << "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
-                      << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n";
+                      << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n"
                       //<< "write:     " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
+                      << "total:     " << d_total_s << " s\n";
         }
 
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
