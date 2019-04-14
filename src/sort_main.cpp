@@ -389,23 +389,25 @@ int main(int argc, const char **argv)
             assert(std::is_sorted(records, records + num_records_to_sort));
         }
 
+        const auto t_end = ch::high_resolution_clock::now();
+
         /* Report times and throughput. */
         {
             constexpr unsigned long MiB = 1024 * 1024;
 
             const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_begin_read - t_begin_partition).count() / 1e3;
             const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
-            //const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_sort).count() / 1e3;
+            const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_sort).count() / 1e3;
             //const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
 
             const auto throughput_partition_mbs = num_records_to_partition * sizeof(record) / MiB / d_partition_s;
             const auto throughput_read_mbs = (size_in_bytes - num_records_to_partition * sizeof(record)) / MiB / d_read_s;
-            //const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
+            const auto throughput_sort_mbs = size_in_bytes / MiB / d_sort_s;
             //const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
 
             std::cerr << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n"
-                      << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n";
-                      //<< "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
+                      << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
+                      << "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n";
                       //<< "write:     " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
 
