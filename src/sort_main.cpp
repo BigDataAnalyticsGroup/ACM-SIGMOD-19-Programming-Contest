@@ -56,12 +56,12 @@
 namespace ch = std::chrono;
 
 constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
-constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
-//constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
+//constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
+constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
-//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
+//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -299,7 +299,7 @@ int main(int argc, const char **argv)
             for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
                 path.str("");
                 path << OUTPUT_PATH << "/bucket_" << std::setfill('0') << std::setw(3) << bucket_id << ".bin";
-                FILE *file = fopen(path.str().c_str(), "w");
+                FILE *file = fopen(path.str().c_str(), "w+b");
                 if (not file)
                     err(EXIT_FAILURE, "Could not open bucket file '%s'", path.str().c_str());
 
@@ -412,8 +412,34 @@ int main(int argc, const char **argv)
 #endif
         }
 
-        /* TODO For each partition, read it, sort it, merge with sorted records, and write out to output file. */
         thread_sort.join();
+
+        const auto t_merge_begin = ch::high_resolution_clock::now();
+
+        /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            FILE *file = bucket_files[bucket_id];
+            if (fflush(file))
+                err(EXIT_FAILURE, "Failed to flush bucket %lu", bucket_id);
+            int fd = fileno(file);
+            struct stat status;
+            if (fstat(fd, &status))
+                err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
+            void *mem = mmap(nullptr, status.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+            if (mem == MAP_FAILED)
+                err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
+            record *bucket = reinterpret_cast<record*>(mem);
+            const std::size_t num_records_in_bucket = status.st_size / sizeof(record);
+
+            std::cerr << "Mapping and sorting bucket " << bucket_id << " with " << num_records_in_bucket << " records.\n";
+            american_flag_sort_parallel(bucket, bucket + num_records_in_bucket, 0);
+            assert(std::is_sorted(bucket, bucket + num_records_in_bucket));
+
+            std::cerr << "Merging the bucket with the in-memory data and writing it to the output.\n";
+            /* TODO */
+
+            munmap(mem, status.st_size);
+        }
 
         const auto t_end = ch::high_resolution_clock::now();
 
@@ -423,19 +449,19 @@ int main(int argc, const char **argv)
 
             const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_partition - t_begin_read).count() / 1e3;
             const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_end_sort - t_begin_sort).count() / 1e3;
-            const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_partition).count() / 1e3;
-            //const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
+            const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_merge_begin - t_begin_partition).count() / 1e3;
+            const auto d_merge_s = ch::duration_cast<ch::milliseconds>(t_end - t_merge_begin).count() / 1e3;
             const auto d_total_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_read).count() / 1e3;
 
             const auto throughput_read_mbs = num_bytes_to_sort / MiB / d_read_s;
             const auto throughput_sort_mbs = num_bytes_to_sort / MiB / d_sort_s;
             const auto throughput_partition_mbs = num_bytes_to_partition / MiB / d_partition_s;
-            //const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
+            const auto throughput_merge_mbs = size_in_bytes / MiB / d_merge_s;
 
             std::cerr << "read:      " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
                       << "sort:      " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
                       << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n"
-                      //<< "write:     " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
+                      << "merge:     " << d_merge_s << " s (" << throughput_merge_mbs << " MiB/s)\n"
                       << "total:     " << d_total_s << " s\n";
         }
 
