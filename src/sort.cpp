@@ -271,7 +271,6 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
     histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
 
     /* Compute a global histogram by computing a histogram for each thread region. */
-    const auto t_hist_begin = high_resolution_clock::now();
     {
         auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[NUM_THREADS_HISTOGRAM];
         auto compute_hist = [histograms](unsigned tid, record *first, record *last) {
@@ -300,8 +299,6 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
     std::cerr << histogram << std::endl;
 #endif
 
-    const auto t_bucket_begin = high_resolution_clock::now();
-
     /* Compute the bucket locations based on the global histogram. */
     const auto buckets = compute_buckets(first, last, histogram);
     assert(buckets[NUM_BUCKETS - 1] + histogram[NUM_BUCKETS - 1] == last and "bucket computation failed");
@@ -316,8 +313,6 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
         new (&heads[i]) std::atomic<record*>(buckets[i]);
         new (&tails[i]) std::atomic<record*>(buckets[i] + histogram[i]);
     }
-
-    const auto t_partition_begin = high_resolution_clock::now();
 
     std::atomic_uint_fast32_t bucket_counter(0);
     auto distribute = [digit, heads, tails, histogram, &bucket_counter]() {
@@ -413,8 +408,6 @@ bucket_finished:;
     }
 #endif
 
-    const auto t_repair_begin = high_resolution_clock::now();
-
     /* There can be at most one incorrect item per bucket.  Go through all buckets, see if there is an incorrect item,
      * and rotate it to its correct position in American Flag Sort style.  Repeat until the bucket is correct.  Proceed
      * with next bucket. */
@@ -444,8 +437,6 @@ bucket_finished:;
         }
     }
 #endif
-
-    const auto t_recurse_begin = high_resolution_clock::now();
 
     free(heads);
     free(tails);
@@ -479,12 +470,4 @@ bucket_finished:;
         for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
             threads[tid].join();
     }
-
-    const auto t_end = high_resolution_clock::now();
-
-    std::cerr << "histogram: " << duration_cast<milliseconds>(t_bucket_begin - t_hist_begin).count() / 1e3 << " s\n"
-              << "buckets:   " << duration_cast<milliseconds>(t_partition_begin - t_bucket_begin).count() / 1e3 << " s\n"
-              << "partition: " << duration_cast<milliseconds>(t_repair_begin - t_partition_begin).count() / 1e3 << " s\n"
-              << "repair:    " << duration_cast<milliseconds>(t_recurse_begin - t_repair_begin).count() / 1e3 << " s\n"
-              << "recurse:   " << duration_cast<milliseconds>(t_end - t_recurse_begin).count() / 1e3 << " s\n";
 }
