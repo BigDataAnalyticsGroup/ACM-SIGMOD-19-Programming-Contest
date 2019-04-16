@@ -274,6 +274,7 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
     {
         auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[NUM_THREADS_HISTOGRAM];
         auto compute_hist = [histograms](unsigned tid, record *first, record *last) {
+            assert(tid < NUM_THREADS_HISTOGRAM);
             histograms[tid] = compute_histogram(first, last, 0);
         };
         std::array<std::thread, NUM_THREADS_HISTOGRAM> threads;
@@ -295,9 +296,6 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
         assert(histogram.count() == num_records and "histogram accumulation failed");
         delete[] histograms;
     }
-#ifndef NDEBUG
-    std::cerr << histogram << std::endl;
-#endif
 
     /* Compute the bucket locations based on the global histogram. */
     const auto buckets = compute_buckets(first, last, histogram);

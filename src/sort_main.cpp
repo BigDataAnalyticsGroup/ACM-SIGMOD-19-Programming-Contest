@@ -63,7 +63,7 @@ constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
 //constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 1UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -271,6 +271,8 @@ int main(int argc, const char **argv)
         assert(num_records_to_partition < num_records);
         assert(num_bytes_to_sort <= size_in_bytes);
         assert(num_bytes_to_partition < size_in_bytes);
+        assert(num_records_to_sort + num_records_to_partition == num_records);
+        assert(num_bytes_to_sort + num_bytes_to_partition == size_in_bytes);
 
         const auto t_begin_read = ch::high_resolution_clock::now();
 
@@ -281,16 +283,20 @@ int main(int argc, const char **argv)
         if (in_memory_buffer == MAP_FAILED)
             err(EXIT_FAILURE, "Failed to map temporary read buffer");
         read_concurrent(fd_in, in_memory_buffer, num_bytes_to_sort, 0);
-        record * const records_sorted = reinterpret_cast<record*>(in_memory_buffer);
+#ifndef NDEBUG
+        std::cerr << "Allocated the in-memory buffer in range " << (void*)(in_memory_buffer) << " to "
+                  << (void*)(reinterpret_cast<uint8_t*>(in_memory_buffer) + num_bytes_to_sort) << ".\n";
+#endif
 
         ch::high_resolution_clock::time_point t_begin_sort, t_end_sort;
 
         /* Sort the records in-memory. */
         std::cerr << "Sort " << num_records_to_sort << " records in-memory in a separate thread.\n";
-        std::thread thread_sort = std::thread([&]() {
+        std::thread thread_sort = std::thread([in_memory_buffer, num_records_to_sort, &t_begin_sort, &t_end_sort]() {
+            record * const records = reinterpret_cast<record*>(in_memory_buffer);
             t_begin_sort = ch::high_resolution_clock::now();
-            american_flag_sort_parallel(records_sorted, records_sorted + num_records_to_sort, 0);
-            assert(std::is_sorted(records_sorted, records_sorted + num_records_to_sort));
+            american_flag_sort_parallel(records, records + num_records_to_sort, 0);
+            assert(std::is_sorted(records, records + num_records_to_sort));
             t_end_sort = ch::high_resolution_clock::now();
         });
 
@@ -444,8 +450,9 @@ int main(int argc, const char **argv)
         /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
         std::cerr << "Merge the sorted " << num_records_to_sort << " records in memory with the buckets.\n";
         auto p_out = reinterpret_cast<record*>(output);
-        auto p_sorted = records_sorted;
-        auto end_sorted = records_sorted + num_records_to_sort;
+        auto p_sorted = reinterpret_cast<record*>(in_memory_buffer);
+        auto end_sorted = p_sorted + num_records_to_sort;
+        assert(std::is_sorted(p_sorted, end_sorted) and "in-memory data is not sorted");
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
             FILE *file = bucket_files[bucket_id];
             if (fflush(file))
@@ -454,59 +461,61 @@ int main(int argc, const char **argv)
             struct stat status;
             if (fstat(fd, &status))
                 err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
-            void *mem = mmap(nullptr, status.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
-            if (mem == MAP_FAILED)
-                err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
-            record *bucket = reinterpret_cast<record*>(mem);
-            const std::size_t num_records_in_bucket = status.st_size / sizeof(record);
 
-            //std::cerr << "Mapping and sorting bucket " << bucket_id << " with " << num_records_in_bucket << " records.\n";
-            american_flag_sort_parallel(bucket, bucket + num_records_in_bucket, 0);
-            assert(std::is_sorted(bucket, bucket + num_records_in_bucket));
+            /* Process non-empty bucket. */
+            if (status.st_size != 0) {
+                void *mem_bucket = mmap(nullptr, status.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+                if (mem_bucket == MAP_FAILED)
+                    err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
+                if (madvise(mem_bucket, status.st_size, MADV_SEQUENTIAL))
+                    warn("Failed to advise sequential access to the bucket file");
+                record *bucket = reinterpret_cast<record*>(mem_bucket);
+                const std::size_t num_records_in_bucket = status.st_size / sizeof(record);
 
-            /* TODO */
-            auto p_bucket = bucket;
-            auto end_bucket = bucket + num_records_in_bucket;
+                //std::cerr << "Mapping and sorting bucket " << bucket_id << " with " << num_records_in_bucket << " records.\n";
+                american_flag_sort_parallel(bucket, bucket + num_records_in_bucket, 0);
+                assert(std::is_sorted(bucket, bucket + num_records_in_bucket));
+
+                /* TODO */
+                auto p_bucket = bucket;
+                auto end_bucket = bucket + num_records_in_bucket;
+                const auto p_sorted_old = p_sorted;
 
 #ifndef NDEBUG
-            std::cerr << "Merging bucket " << bucket_id << " of " << num_records_in_bucket
-                      << " records with sorted data at offset " << (p_sorted - records_sorted)
-                      << " (" << (p_sorted - records_sorted) * sizeof(record) << " bytes).\n";
-            const auto before = p_sorted;
+                std::cerr << "Merging bucket " << bucket_id << " of " << num_records_in_bucket
+                          << " records with sorted data at offset " << (p_sorted - (record*) in_memory_buffer)
+                          << " (" << (p_sorted - (record*) in_memory_buffer) * sizeof(record) << " bytes).\n";
 #endif
 
-            /* Merge this bucket with the sorted data. */
-            while (p_bucket != end_bucket and p_sorted != end_sorted) {
-                assert(p_bucket <= end_bucket);
-                assert(p_sorted <= end_sorted);
-                assert(p_out < reinterpret_cast<record*>(output) + num_records);
-                if (*p_bucket < *p_sorted) {
-                    *p_out++ = *p_bucket++;
-                } else {
-                    *p_out++ = *p_sorted++;
+                /* Merge this bucket with the sorted data. */
+                while (p_bucket != end_bucket and p_sorted != end_sorted) {
+                    assert(p_bucket <= end_bucket);
+                    assert(p_sorted <= end_sorted);
+                    assert(p_out < reinterpret_cast<record*>(output) + num_records);
+                    if (*p_bucket < *p_sorted) {
+                        *p_out++ = *p_bucket++;
+                    } else {
+                        *p_out++ = *p_sorted++;
+                    }
                 }
-            }
-            assert ((p_bucket == end_bucket) != (p_sorted == end_sorted));
-            /* Finish the bucket, if necessary. */
-            while (p_bucket != end_bucket)
-                *p_out++ = *p_bucket++;
+                assert ((p_bucket == end_bucket) != (p_sorted == end_sorted) and
+                        "either the bucket is finished and sorted in-memory data remains or vice versa");
+                /* Finish the bucket, if necessary. */
+                while (p_bucket != end_bucket)
+                    *p_out++ = *p_bucket++;
 
-#ifndef NDEBUG
-            std::cerr << "  Consumed " << (p_sorted - before) << " records (" << (p_sorted - before) * sizeof(record)
-                      << " bytes) from the sorted data." << std::endl;
-#endif
-
-            /* Release resources. */
-            if (1) {
-                const std::size_t num_bytes_merged_from_sorted = (p_sorted - records_sorted) * sizeof(record);
-                const std::size_t num_bytes_to_unmap = num_bytes_merged_from_sorted & ~(std::size_t(PAGESIZE) - 1);
-                assert(num_bytes_to_unmap % PAGESIZE == 0 and "invalid length of region to unmap");
-#ifndef NDEBUG
-                std::cerr << "Unmapping the first " << num_bytes_to_unmap << " bytes of the sorted data." << std::endl;
-#endif
-                munmap(in_memory_buffer, num_bytes_to_unmap);
+                /* Release resources. */
+                if (1) {
+                    /* Compute the address of the page of p_sorted_old */
+                    uintptr_t unmap_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
+                    uintptr_t unmap_end = reinterpret_cast<uintptr_t>(p_sorted) & ~(uintptr_t(PAGESIZE) - 1);
+                    if (munmap(reinterpret_cast<void*>(unmap_begin), unmap_end - unmap_begin))
+                        err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
+                }
+                if (munmap(mem_bucket, status.st_size))
+                    err(EXIT_FAILURE, "Failed to unmap the bucket");
             }
-            munmap(mem, status.st_size);
+
             if (fclose(file))
                 warn("Failed to close bucket file");
             free(file_buffers[bucket_id]);
@@ -542,7 +551,8 @@ int main(int argc, const char **argv)
         std::this_thread::sleep_for(40s);
 
         /* Release resources. */
-        munmap(in_memory_buffer, num_bytes_to_sort);
+        if (munmap(in_memory_buffer, num_bytes_to_sort))
+            err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
         std::cerr << "Not yet supported.\n";
         std::exit(EXIT_FAILURE);
     }
