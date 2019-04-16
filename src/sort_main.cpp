@@ -202,6 +202,7 @@ int main(int argc, const char **argv)
         const auto t_begin_read = ch::high_resolution_clock::now();
 
         /* Spawn threads to concurrently read file. */
+        std::cerr << "Read data into main memory.\n";
         read_concurrent(fd_in, output, size_in_bytes, 0);
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
@@ -492,11 +493,10 @@ int main(int argc, const char **argv)
                     assert(p_bucket <= end_bucket);
                     assert(p_sorted <= end_sorted);
                     assert(p_out < reinterpret_cast<record*>(output) + num_records);
-                    if (*p_bucket < *p_sorted) {
+                    if (*p_bucket < *p_sorted)
                         *p_out++ = *p_bucket++;
-                    } else {
+                    else
                         *p_out++ = *p_sorted++;
-                    }
                 }
                 assert ((p_bucket == end_bucket) != (p_sorted == end_sorted) and
                         "either the bucket is finished and sorted in-memory data remains or vice versa");
