@@ -63,7 +63,7 @@ constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
 //constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 1UL * 1024 * 1024 * 1024; // 26 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 2UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -304,9 +304,13 @@ int main(int argc, const char **argv)
         const auto t_begin_partition = ch::high_resolution_clock::now();
 
         /* Create the output files for the buckets. */
-        std::array<FILE*, NUM_BUCKETS> bucket_files;
-        std::array<void*, NUM_BUCKETS> file_buffers;
-        std::array<std::atomic_uint_fast32_t, NUM_BUCKETS> bucket_size{ {0} };
+        struct bucket_t {
+            FILE *file; ///< the associated stream object
+            void *buffer; ///< the buffer assigned to the stream object
+            std::size_t size; ///< the size of the bucket in bytes
+            void *addr = nullptr; ///< the address of the mapped memory region
+        };
+        std::array<bucket_t, NUM_BUCKETS> buckets;
         {
             std::ostringstream path;
             for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
@@ -325,8 +329,8 @@ int main(int argc, const char **argv)
                 if (setvbuf(file, static_cast<char*>(buffer), _IOFBF, buffer_size))
                     err(EXIT_FAILURE, "Failed to set custom buffer for file");
 
-                file_buffers[bucket_id] = buffer;
-                bucket_files[bucket_id] = file;
+                buckets[bucket_id].file = file;
+                buckets[bucket_id].buffer = buffer;
             }
         }
 
@@ -335,7 +339,7 @@ int main(int argc, const char **argv)
             std::cerr << "Read and partition the remaining " << num_records_to_partition << " records ("
                       << num_bytes_to_partition << " bytes), starting at offset " << num_bytes_to_sort << ".\n";
 
-            auto partition = [fd_in, argv, &bucket_files, &bucket_size](std::size_t offset, std::size_t count) {
+            auto partition = [fd_in, argv, buckets] (std::size_t offset, std::size_t count) {
                 constexpr std::size_t RECORDS_PER_BUFFER = 10000;
                 record buf[RECORDS_PER_BUFFER];
 
@@ -350,10 +354,8 @@ int main(int argc, const char **argv)
                     count -= RECORDS_PER_BUFFER;
 
                     for (auto &r : buf) {
-                        const unsigned dst_bucket = r.key[0];
-                        bucket_size[dst_bucket].fetch_add(1);
-                        auto dst_file = bucket_files[dst_bucket];
-                        fwrite(&r, sizeof(r), 1, dst_file);
+                        const auto &dst_bucket = buckets[r.key[0]];
+                        fwrite(&r, sizeof(r), 1, dst_bucket.file);
                     }
                 }
                 assert(count < RECORDS_PER_BUFFER);
@@ -368,10 +370,8 @@ int main(int argc, const char **argv)
 
                     for (std::size_t i = 0; i != count; ++i) {
                         auto &r = buf[i];
-                        const unsigned dst_bucket = r.key[0];
-                        bucket_size[dst_bucket].fetch_add(1);
-                        auto dst_file = bucket_files[dst_bucket];
-                        fwrite(&r, sizeof(r), 1, dst_file);
+                        const auto &dst_bucket = buckets[r.key[0]];
+                        fwrite(&r, sizeof(r), 1, dst_bucket.file);
                     }
                 }
             };
@@ -431,21 +431,6 @@ int main(int argc, const char **argv)
 
         thread_sort.join();
 
-#if 0
-        /* Find the largest bucket. */
-        {
-            std::size_t max_bucket = 0;
-            unsigned size = bucket_size[max_bucket];
-            for (std::size_t bucket_id = 1; bucket_id != NUM_BUCKETS; ++bucket_id) {
-                if (bucket_size[bucket_id] > size) {
-                    max_bucket = bucket_id;
-                    size = bucket_size[bucket_id];
-                }
-            }
-            std::cerr << "The largest bucket is bucket " << max_bucket << " with " << size << " records.\n";
-        }
-#endif
-
         const auto t_merge_begin = ch::high_resolution_clock::now();
 
         /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
@@ -456,35 +441,36 @@ int main(int argc, const char **argv)
         assert(std::is_sorted(p_sorted, end_sorted) and "in-memory data is not sorted");
 
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            FILE *file = bucket_files[bucket_id];
-            if (fflush(file))
+            auto &bucket = buckets[bucket_id];
+            if (fflush(bucket.file))
                 err(EXIT_FAILURE, "Failed to flush bucket %lu", bucket_id);
-            int fd = fileno(file);
+            int fd = fileno(bucket.file);
             struct stat status;
             if (fstat(fd, &status))
                 err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
+            bucket.size = status.st_size;
 
             /* Process non-empty bucket. */
-            if (status.st_size != 0) {
+            if (bucket.size != 0) {
                 /* Get the bucket data into memory. */
-                void *mem_bucket = mmap(nullptr, status.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
-                if (mem_bucket == MAP_FAILED)
+                bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+                if (bucket.addr == MAP_FAILED)
                     err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
-                if (madvise(mem_bucket, status.st_size, MADV_SEQUENTIAL))
+                if (madvise(bucket.addr, bucket.size, MADV_SEQUENTIAL))
                     warn("Failed to advise sequential access to the bucket file");
-                record *bucket = reinterpret_cast<record*>(mem_bucket);
-                const std::size_t num_records_in_bucket = status.st_size / sizeof(record);
+                record *records = reinterpret_cast<record*>(bucket.addr);
+                const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
 
                 /* Sort the bucket. */
                 // TODO Read ahaead and sort the next bucket already, while merging the current.
                 const auto t_sort_bucket_begin = ch::high_resolution_clock::now();
-                american_flag_sort_parallel(bucket, bucket + num_records_in_bucket, 0);
-                assert(std::is_sorted(bucket, bucket + num_records_in_bucket));
+                american_flag_sort_parallel(records, records + num_records_in_bucket, 0);
+                assert(std::is_sorted(records, records + num_records_in_bucket));
                 const auto t_sort_bucket_end = ch::high_resolution_clock::now();
 
                 /* TODO */
-                auto p_bucket = bucket;
-                auto end_bucket = bucket + num_records_in_bucket;
+                auto p_bucket = records;
+                auto end_bucket = records + num_records_in_bucket;
                 const auto p_sorted_old = p_sorted;
 
 #ifndef NDEBUG
@@ -522,13 +508,13 @@ int main(int argc, const char **argv)
                 uintptr_t unmap_end = reinterpret_cast<uintptr_t>(p_sorted) & ~(uintptr_t(PAGESIZE) - 1);
                 if (munmap(reinterpret_cast<void*>(unmap_begin), unmap_end - unmap_begin))
                     err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
-                if (munmap(mem_bucket, status.st_size))
+                if (munmap(bucket.addr, bucket.size))
                     err(EXIT_FAILURE, "Failed to unmap the bucket");
             }
 
-            if (fclose(file))
+            if (fclose(bucket.file))
                 warn("Failed to close bucket file");
-            free(file_buffers[bucket_id]);
+            free(bucket.buffer);
         }
         /* Finish the sorted in-memory data. */
         while (p_sorted != end_sorted)
