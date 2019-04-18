@@ -535,6 +535,10 @@ int main(int argc, const char **argv)
 
         const auto t_end = ch::high_resolution_clock::now();
 
+        /* Release resources. */
+        if (munmap(in_memory_buffer, num_bytes_to_sort))
+            err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
+
         /* Report times and throughput. */
         {
             constexpr unsigned long MiB = 1024 * 1024;
@@ -557,13 +561,6 @@ int main(int argc, const char **argv)
                       << "total:     " << d_total_s << " s\n";
         }
 
-        std::this_thread::sleep_for(40s);
-
-        /* Release resources. */
-        if (munmap(in_memory_buffer, num_bytes_to_sort))
-            err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
-        std::cerr << "Not yet supported.\n";
-        std::exit(EXIT_FAILURE);
 #ifdef SUBMISSION
         std::this_thread::sleep_for(20s);
 #endif
