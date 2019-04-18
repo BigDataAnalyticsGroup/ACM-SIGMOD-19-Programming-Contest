@@ -492,6 +492,7 @@ int main(int argc, const char **argv)
                     const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                     const auto bucket_begin = reinterpret_cast<record*>(bucket.addr);
                     const auto bucket_end = bucket_begin + num_records_in_bucket;
+                    assert(std::is_sorted(bucket_begin, bucket_end));
 
                     auto p_bucket = bucket_begin;
                     const auto p_sorted_old = p_sorted;
