@@ -249,7 +249,9 @@ int main(int argc, const char **argv)
                       << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
 
+#ifdef SUBMISSION
         std::this_thread::sleep_for(10s);
+#endif
     }
     else
     {
@@ -562,6 +564,9 @@ int main(int argc, const char **argv)
             err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
         std::cerr << "Not yet supported.\n";
         std::exit(EXIT_FAILURE);
+#ifdef SUBMISSION
+        std::this_thread::sleep_for(20s);
+#endif
     }
 
     /* Release resources. */
