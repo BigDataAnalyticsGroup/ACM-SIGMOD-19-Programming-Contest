@@ -501,7 +501,7 @@ int main(int argc, const char **argv)
                         assert(p_sorted <= sorted_end);
                         assert(p_out < reinterpret_cast<record*>(output) + num_records);
                         const auto cmp = memcmp(p_bucket->key.data(), p_sorted->key.data(), sizeof(key_type));
-                        *p_out = cmp <= 0 ? *p_bucket++ : *p_sorted++;
+                        *p_out++ = cmp <= 0 ? *p_bucket++ : *p_sorted++;
                     }
                     assert ((p_bucket == bucket_end) != (p_sorted == sorted_end) and
                             "either the bucket is finished and sorted in-memory data remains or vice versa");
