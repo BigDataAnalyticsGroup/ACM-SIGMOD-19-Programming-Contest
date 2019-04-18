@@ -42,7 +42,6 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
-#include <parallel/algorithm>
 #include <sched.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
