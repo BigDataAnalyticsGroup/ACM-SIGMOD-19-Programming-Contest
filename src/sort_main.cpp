@@ -58,21 +58,21 @@ namespace ch = std::chrono;
 using namespace std::chrono_literals;
 
 constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
-constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
-//constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
+//constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
+constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
-//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 3UL * 1024 * 1024 * 1024; // 26 GiB
+//constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 2UL * 1024 * 1024 * 1024; // 26 GiB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
 constexpr unsigned NUM_THREADS_READ = 20;
-constexpr unsigned NUM_THREADS_PARTITION = 10;
+constexpr unsigned NUM_THREADS_PARTITION = 6;
 constexpr const char * const OUTPUT_PATH = "/output-disk";
 #else
 constexpr unsigned NUM_THREADS_READ = 4;
-constexpr unsigned NUM_THREADS_PARTITION = 16;
+constexpr unsigned NUM_THREADS_PARTITION = 6;
 constexpr const char * const OUTPUT_PATH = "./buckets";
 #endif
 
@@ -309,7 +309,7 @@ int main(int argc, const char **argv)
         struct bucket_t {
             FILE *file; ///< the associated stream object
             void *buffer; ///< the buffer assigned to the stream object
-            std::size_t size; ///< the size of the bucket in bytes
+            std::atomic_uint_fast64_t size = 0UL; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the mapped memory region
             std::thread sorter; ///< the thread that sorts the bucket
         };
@@ -323,12 +323,11 @@ int main(int argc, const char **argv)
                 if (not file)
                     err(EXIT_FAILURE, "Could not open bucket file '%s'", path.str().c_str());
 
-                /* Assign custom, large file buffer. */
+                /* Assign custom, large buffer to file stream. */
                 const std::size_t buffer_size = 256 * stat_in.st_blksize;
                 void *buffer = malloc(buffer_size);
                 if (not buffer)
                     err(EXIT_FAILURE, "Failed to allocate I/O buffer");
-
                 if (setvbuf(file, static_cast<char*>(buffer), _IOFBF, buffer_size))
                     err(EXIT_FAILURE, "Failed to set custom buffer for file");
 
@@ -342,41 +341,80 @@ int main(int argc, const char **argv)
             std::cerr << "Read and partition the remaining " << num_records_to_partition << " records ("
                       << num_bytes_to_partition << " bytes), starting at offset " << num_bytes_to_sort << ".\n";
 
+            /* Partition concurrently by evenly dividing the input between multiple partitioning threads.  Every thread
+             * owns a buffer of N records for each bucket.  Read the input and append each record to the buffer of its
+             * destination bucket.  If a buffer runs full, flush it to the bucket file. */
             auto partition = [fd_in, argv, &buckets] (std::size_t offset, std::size_t count) {
-                constexpr std::size_t RECORDS_PER_BUFFER = 10000;
-                record buf[RECORDS_PER_BUFFER];
+                constexpr std::size_t NUM_RECORDS_READ = 10000;
+                constexpr std::size_t NUM_RECORDS_PER_BUFFER = 1024;
+
+                auto read_buffer = new record[NUM_RECORDS_READ]; ///< buffer to read into from input file
+                using buffer_t = std::array<record, NUM_RECORDS_PER_BUFFER>;
+                auto buffers = new buffer_t[NUM_BUCKETS]; ///< write-back buffer for each bucket file
+                std::array<record*, NUM_BUCKETS> heads; ///< next empty slot in each write-back buffer
+
+                for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
+                    heads[bucket_id] = buffers[bucket_id].data();
 
                 /* Read as many records at once as fit into our buffer. */
-                while (count >= RECORDS_PER_BUFFER) {
-                    const auto bytes_read = pread(fd_in, buf, sizeof(buf), offset);
-                    if (bytes_read != sizeof(buf)) {
+                while (count >= NUM_RECORDS_READ) {
+                    const auto bytes_read = pread(fd_in, read_buffer, NUM_RECORDS_READ * sizeof(record), offset);
+                    if (bytes_read != NUM_RECORDS_READ * sizeof(record)) {
                         warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
                         return;
                     }
                     offset += bytes_read;
-                    count -= RECORDS_PER_BUFFER;
+                    count -= NUM_RECORDS_READ;
 
-                    for (auto &r : buf) {
-                        const auto &dst_bucket = buckets[r.key[0]];
-                        fwrite(&r, sizeof(r), 1, dst_bucket.file);
+                    /* Partition all records from the read buffer into the write-back buffers. */
+                    for (auto r = read_buffer, end = read_buffer + NUM_RECORDS_READ; r != end; ++r) {
+                        const unsigned bucket_id = r->key[0]; // get bucket id
+                        *heads[bucket_id]++ = *r; // append to write-back buffer
+                        /* If the write-back buffer is full, write it out and reset head. */
+                        if (heads[bucket_id] == &buffers[bucket_id][NUM_RECORDS_PER_BUFFER]) {
+                            heads[bucket_id] = buffers[bucket_id].data(); // reset head
+                            auto &bucket = buckets[bucket_id];
+                            auto written = fwrite(heads[bucket_id], sizeof(record), NUM_RECORDS_PER_BUFFER, bucket.file);
+                            if (written != NUM_RECORDS_PER_BUFFER)
+                                err(EXIT_FAILURE, "Failed to write all records of buffer to file");
+                        }
                     }
                 }
-                assert(count < RECORDS_PER_BUFFER);
+                assert(count < NUM_RECORDS_READ);
 
                 /* Read remaining records at the end. */
                 if (count) {
-                    const auto bytes_read = pread(fd_in, buf, count * sizeof(*buf), offset);
-                    if (bytes_read != int(count * sizeof(*buf))) {
+                    const auto bytes_read = pread(fd_in, read_buffer, count * sizeof(record), offset);
+                    if (bytes_read != int(count * sizeof(record))) {
                         warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
                         return;
                     }
 
-                    for (std::size_t i = 0; i != count; ++i) {
-                        auto &r = buf[i];
-                        const auto &dst_bucket = buckets[r.key[0]];
-                        fwrite(&r, sizeof(r), 1, dst_bucket.file);
+                    for (auto r = read_buffer, end = read_buffer + count; r != end; ++r) {
+                        const unsigned bucket_id = r->key[0];
+                        *heads[bucket_id]++ = *r;
+                        if (heads[bucket_id] == &buffers[bucket_id][NUM_RECORDS_PER_BUFFER]) {
+                            heads[bucket_id] = buffers[bucket_id].data(); // reset head
+                            auto &bucket = buckets[bucket_id];
+                            auto written = fwrite(heads[bucket_id], sizeof(record), NUM_RECORDS_PER_BUFFER, bucket.file);
+                            if (written != NUM_RECORDS_PER_BUFFER)
+                                err(EXIT_FAILURE, "Failed to write all records of buffer to file");
+                        }
                     }
                 }
+
+                /* Write-back the records still in the buffer. */
+                for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+                    buffer_t &buffer = buffers[bucket_id];
+                    auto head = heads[bucket_id];
+                    if (head != buffer.data()) {
+                        auto &bucket = buckets[bucket_id];
+                        fwrite(buffer.data(), sizeof(record), head - buffer.data(), bucket.file);
+                    }
+                }
+
+                delete[] read_buffer;
+                delete[] buffers;
             };
 
 #ifdef SUBMISSION
@@ -432,8 +470,8 @@ int main(int argc, const char **argv)
 #endif
         }
 
+        const auto t_end_partition = ch::high_resolution_clock::now();
         thread_sort.join();
-
         const auto t_merge_begin = ch::high_resolution_clock::now();
 
         /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
@@ -553,7 +591,7 @@ int main(int argc, const char **argv)
 
             const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_partition - t_begin_read).count() / 1e3;
             const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_end_sort - t_begin_sort).count() / 1e3;
-            const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_merge_begin - t_begin_partition).count() / 1e3;
+            const auto d_partition_s = ch::duration_cast<ch::milliseconds>(t_end_partition - t_begin_partition).count() / 1e3;
             const auto d_merge_s = ch::duration_cast<ch::milliseconds>(t_end - t_merge_begin).count() / 1e3;
             const auto d_total_s = ch::duration_cast<ch::milliseconds>(t_end - t_begin_read).count() / 1e3;
 
