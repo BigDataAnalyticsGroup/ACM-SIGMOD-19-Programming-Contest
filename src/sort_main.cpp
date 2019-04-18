@@ -497,6 +497,11 @@ int main(int argc, const char **argv)
                     auto p_bucket = bucket_begin;
                     const auto p_sorted_old = p_sorted;
 
+#ifndef NDEBUG
+                    std::cerr << "Merge bucket " << bucket_id << " of " << num_records_in_bucket
+                              << " sorted records.\n";
+#endif
+
                     /* Merge this bucket with the sorted data. */
                     const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
                     while (p_bucket != bucket_end and p_sorted != sorted_end) {
@@ -513,9 +518,11 @@ int main(int argc, const char **argv)
                         *p_out++ = *p_bucket++;
                     const auto t_merge_bucket_end = ch::high_resolution_clock::now();
 
-                    std::cerr << "Merge bucket " << bucket_id << ": "
+#ifndef NDEBUG
+                    std::cerr << "Time to merge bucket " << bucket_id << ": "
                         << ch::duration_cast<ch::milliseconds>(t_merge_bucket_end - t_merge_bucket_begin).count() / 1e3
                         << "s\n";
+#endif
 
                     /* Release resources. */
                     uintptr_t unmap_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
