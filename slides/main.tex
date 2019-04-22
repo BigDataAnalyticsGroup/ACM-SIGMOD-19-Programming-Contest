@@ -16,7 +16,7 @@
 }
 
 %=== Tikz ==============================================================================================================
-\tikzstyle{rect}=[draw,rectangle,thick,on chain,font=\tiny,inner sep=1mm]
+\tikzstyle{rect}=[draw,rectangle,thick,on chain,font=\tiny,inner sep=1mm,minimum height=1.25em]
 
 %== Title ==============================================================================================================
 \title{ACM/SIGMOD 2019\\Programming Competition}
@@ -137,6 +137,95 @@
             \end{tabular}
         \end{minipage}
     \end{tabularx}
+\end{frame}
+
+
+\begin{frame}{Three Categories}
+    We can classify the workload dependent on the input size into one of three categories.  Let $N$ be the number of
+    records in the input file and let $M$ be number of records that fit into main memory.
+    \pause
+    \begin{enumerate}[<+->]
+        \item $N \le \frac{1}{2}M$: Read the input into main memory and sort out-of-place.
+        \item $\frac{1}{2}M < N \le M$: Read the input into main memory and sort in-place.
+        \item $N > M$: Apply an external sorting algorithm.
+    \end{enumerate}
+\end{frame}
+
+\begin{frame}{Category 2 - In-Memory, In-Place}
+    If $\frac{1}{2}M < N \le M$
+    \begin{itemize}
+        \item sort in-memory
+        \item sort in-place
+        \item use radix sort
+    \end{itemize}
+    \alert{$\Rightarrow$ \emph{American Flag Sort}}
+    \pause
+    \begin{itemize}
+        \item exploit multi-core
+    \end{itemize}
+    \alert{$\Rightarrow$ Custom parallel American Flag Sort}
+    \pause
+    \begin{itemize}
+        \item scales well on single-node systems
+        \item on multi-node system, cache coherence becomes costly and the bottleneck
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Category 1}
+    \centering
+    \alert{Not yet implemented.} $\Rightarrow$ Fall back to category~2.
+\end{frame}
+
+\begin{frame}{Category 3 - External Sorting}
+    If $N > M$, we must do external sorting.
+
+    \pause
+    \begin{tikzpicture}
+        \begin{scope}[start chain=going right,node distance=-\pgflinewidth]
+            \node[rect] (tosort) {first $M - \epsilon$ records};
+            \node[rect] (topart) {remaining $N - (M - \epsilon)$ records};
+        \end{scope}
+
+        \pause
+        \draw[thick,->,>=triangle 60] ($(tosort.south west) + (-1,0)$) -- node[left] {\footnotesize Time} ($(tosort.north west) + (-1,-7)$);
+        \coordinate (mid) at ($(tosort.south east)!.5!(topart.south west)$);
+
+        \pause
+        \draw[decorate,decoration={brace,mirror,amplitude=10pt,raise=1mm}] (tosort.south west) -- (tosort.south east);
+        \fontsize{6}{7.2}\selectfont
+        \node[anchor=north,below=5mm of tosort,align=center,fill=black!15,minimum height=51pt] (tosort_read) {%
+                read at $~516$\,MiB/s
+                \\
+                ($51.5$\,sec) \textcolor{Green}{\checked}
+            };
+        \pause
+        \node[anchor=north,below=0mm of tosort_read,fill=black!10,minimum height=39pt] (tosort_sort) {%
+            sort ($39.2$\,sec) \textcolor{Green}{\checked}
+        };
+
+        \pause
+        \draw[thick,dashed] ($(mid) + (0,-.3)$) -- ($(mid) + (0,-4.4)$);
+        \draw[decorate,decoration={brace,mirror,amplitude=10pt,raise=1mm}] (topart.south west) -- (topart.south east);
+        \node[anchor=north,align=center,fill=black!20,minimum height=64pt] at (tosort_sort.north-|topart) {%
+                read -- partition -- write-back
+                \\
+                at 477\,MiB/s (64\,sec) \textcolor{Green}{\checked}
+            };
+
+        \pause
+        \node[anchor=north,align=center,below=46mm of mid,fill=black!30,minimum height=50pt] {%
+            merge at $202$\,MiB/s
+            \\
+            ($283$\,sec) \scalebox{1.5}{\textcolor{Yellow}{\Lightning}}
+        };
+
+    \end{tikzpicture}
+\end{frame}
+
+
+%===== old slides ======================================================================================================
+
+\begin{frame}{}
 \end{frame}
 
 \begin{frame}[t]{Current State - I/O}
