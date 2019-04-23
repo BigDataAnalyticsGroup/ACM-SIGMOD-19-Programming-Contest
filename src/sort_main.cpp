@@ -518,11 +518,18 @@ int main(int argc, const char **argv)
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
+                    //const auto t_map_before = ch::high_resolution_clock::now();
                     bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
                     if (bucket.addr == MAP_FAILED)
                         err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
                     if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
                         warn("Failed to advise access to the bucket file");
+                    __builtin_prefetch(bucket.addr);
+                    //const auto t_map_after = ch::high_resolution_clock::now();
+                    //std::cerr << "MMap and MADV_WILLNEED of " << double(bucket.size) / (1024 * 1024)
+                              //<< " MiB took "
+                              //<< ch::duration_cast<ch::nanoseconds>(t_map_after - t_map_before).count() / 1e6
+                              //<< " ms\n";
                 }
             }
 
