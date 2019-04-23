@@ -561,6 +561,7 @@ int main(int argc, const char **argv)
 
                     auto p_bucket = bucket_begin;
                     const auto p_sorted_old = p_sorted;
+                    const auto p_out_old = p_out;
 
 #ifndef NDEBUG
                     std::cerr << "Merge bucket " << bucket_id << " of " << num_records_in_bucket
@@ -590,10 +591,24 @@ int main(int argc, const char **argv)
 #endif
 
                     /* Release resources. */
-                    uintptr_t unmap_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
-                    uintptr_t unmap_end = reinterpret_cast<uintptr_t>(p_sorted) & ~(uintptr_t(PAGESIZE) - 1);
-                    if (munmap(reinterpret_cast<void*>(unmap_begin), unmap_end - unmap_begin))
-                        err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
+                    const uintptr_t unmap_sorted_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
+                    const uintptr_t unmap_sorted_end = reinterpret_cast<uintptr_t>(p_sorted) & ~(uintptr_t(PAGESIZE) - 1);
+                    const ptrdiff_t unmap_sorted_length = unmap_sorted_end - unmap_sorted_begin;
+                    const uintptr_t unmap_out_begin = reinterpret_cast<uintptr_t>(p_out_old) & ~(uintptr_t(PAGESIZE) - 1);
+                    const uintptr_t unmap_out_end = reinterpret_cast<uintptr_t>(p_out) & ~(uintptr_t(PAGESIZE) - 1);
+                    const ptrdiff_t unmap_out_length = unmap_out_end - unmap_out_begin;
+
+
+                    if (unmap_sorted_length) {
+                        madvise(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length, MADV_DONTNEED);
+                        if (munmap(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length))
+                            err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
+                    }
+                    if (unmap_out_length) {
+                        madvise(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length, MADV_DONTNEED);
+                        if (munmap(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length))
+                            err(EXIT_FAILURE, "Failed to unmap the solved part of the mmap'd output file");
+                    }
                     if (munmap(bucket.addr, bucket.size))
                         err(EXIT_FAILURE, "Failed to unmap the bucket");
                 }
