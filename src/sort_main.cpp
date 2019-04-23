@@ -64,7 +64,7 @@ constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
 constexpr unsigned NUM_THREADS_READ = 20;
-constexpr unsigned NUM_THREADS_PARTITION = 6;
+constexpr unsigned NUM_THREADS_PARTITION = 10;
 constexpr const char * const OUTPUT_PATH = "/output-disk";
 constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 GiB
 #else
