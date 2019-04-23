@@ -9,7 +9,7 @@ add_library(
 #target_link_libraries(read_write contest ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(sort sort_main.cpp)
-target_link_libraries(sort contest ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(sort contest ${CMAKE_THREAD_LIBS_INIT} PCM)
 
 #add_executable(sort_bench sorting_benchmark.cpp)
 #target_link_libraries(sort_bench contest ${CMAKE_THREAD_LIBS_INIT})
