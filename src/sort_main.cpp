@@ -522,11 +522,11 @@ int main(int argc, const char **argv)
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+                    bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_POPULATE, fd, 0);
                     if (bucket.addr == MAP_FAILED)
                         err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
-                    if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
-                        warn("Failed to advise access to the bucket file");
+                    //if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
+                        //warn("Failed to advise access to the bucket file");
                     __builtin_prefetch(bucket.addr);
                 }
                 const auto t_mmap_end = ch::high_resolution_clock::now();
