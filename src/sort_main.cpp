@@ -314,6 +314,7 @@ int main(int argc, const char **argv)
             void *buffer; ///< the buffer assigned to the stream object
             std::atomic_uint_fast64_t size = 0UL; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the mapped memory region
+            std::thread mapper; ///< the thread that maps and populates the memory
             std::thread sorter; ///< the thread that sorts the bucket
         };
         std::array<bucket_t, NUM_BUCKETS> buckets;
@@ -505,9 +506,12 @@ int main(int argc, const char **argv)
 #ifndef NDEBUG
             std::cerr << "i = " << i << ":\n";
 #endif
+            ch::high_resolution_clock::time_point t_mmap_begin, t_sort_bucket_begin, t_merge_bucket_begin,
+                                                  t_merge_bucket_end, t_resource_end;
+
             /* MMap and fetch the next bucket. */
             if (i < NUM_BUCKETS) {
-                const auto t_mmap_begin = ch::high_resolution_clock::now();
+                t_mmap_begin = ch::high_resolution_clock::now();
                 const auto bucket_id = i;
                 assert(bucket_id < NUM_BUCKETS);
                 auto &bucket = buckets[bucket_id];
@@ -522,26 +526,29 @@ int main(int argc, const char **argv)
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_POPULATE, fd, 0);
-                    if (bucket.addr == MAP_FAILED)
-                        err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
-                    //if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
-                        //warn("Failed to advise access to the bucket file");
-                    __builtin_prefetch(bucket.addr);
+                    bucket.mapper = std::thread([&bucket, fd, bucket_id]() {
+                        bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_POPULATE, fd, 0);
+                        if (bucket.addr == MAP_FAILED)
+                            err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
+                        //if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
+                            //warn("Failed to advise access to the bucket file");
+                        __builtin_prefetch(bucket.addr);
+                    });
                 }
-                const auto t_mmap_end = ch::high_resolution_clock::now();
-                d_mmap_total += t_mmap_end - t_mmap_begin;
-                std::cerr << "MMap bucket took "
-                          << ch::duration_cast<ch::nanoseconds>(t_mmap_end - t_mmap_begin).count() / 1e6 << " ms\n";
             }
 
-            const auto t_sort_bucket_begin = ch::high_resolution_clock::now();
             if (i >= 1 and i <= NUM_BUCKETS) {
                 const auto bucket_id = i - 1;
                 assert(bucket_id < NUM_BUCKETS);
                 auto &bucket = buckets[bucket_id];
 
                 if (bucket.size) {
+                    bucket.mapper.join();
+                    t_sort_bucket_begin = ch::high_resolution_clock::now();
+                    d_mmap_total += t_sort_bucket_begin - t_mmap_begin;
+                    std::cerr << "MMap bucket took "
+                              << ch::duration_cast<ch::nanoseconds>(t_sort_bucket_begin - t_mmap_begin).count() / 1e6 << " ms\n";
+
                     record *records = reinterpret_cast<record*>(bucket.addr);
                     const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                     bucket.sorter = std::thread(american_flag_sort_parallel,
@@ -556,10 +563,8 @@ int main(int argc, const char **argv)
 
                 if (bucket.size) {
                     bucket.sorter.join(); // wait for the sorter thread to finish sorting the bucket
-
-                    const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
+                    t_merge_bucket_begin = ch::high_resolution_clock::now();
                     d_sort_total += t_merge_bucket_begin - t_sort_bucket_begin;
-
                     std::cerr << "  Sort bucket took "
                               << ch::duration_cast<ch::nanoseconds>(t_merge_bucket_begin - t_sort_bucket_begin).count() / 1e6
                               << " ms\n";
@@ -573,10 +578,6 @@ int main(int argc, const char **argv)
                     const auto p_sorted_old = p_sorted;
                     const auto p_out_old = p_out;
 
-#ifndef NDEBUG
-                    std::cerr << "  Merge bucket " << bucket_id << " of " << num_records_in_bucket
-                              << " sorted records.\n";
-#endif
                     /* If the in-memory data is not yet finished, merge. */
                     if (p_sorted != sorted_end) {
                         /* Merge this bucket with the sorted data. */
@@ -613,7 +614,7 @@ int main(int argc, const char **argv)
                             "incorrect number of elements written to output");
                     assert(std::is_sorted(p_out_old, p_out) and "output not sorted");
 
-                    const auto t_merge_bucket_end = ch::high_resolution_clock::now();
+                    t_merge_bucket_end = ch::high_resolution_clock::now();
                     d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
 
                     std::cerr
@@ -643,7 +644,7 @@ int main(int argc, const char **argv)
                     if (munmap(bucket.addr, bucket.size))
                         err(EXIT_FAILURE, "Failed to unmap the bucket");
 
-                    const auto t_resource_end = ch::high_resolution_clock::now();
+                    t_resource_end = ch::high_resolution_clock::now();
                     d_mmap_total += t_resource_end - t_merge_bucket_end;
 
                     std::cerr << "  Unmap resources took "
