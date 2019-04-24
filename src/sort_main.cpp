@@ -53,6 +53,8 @@
 #include "cpucounters.h"
 #endif
 
+#include <iacaMarks.h>
+
 #define READ_CONCURRENT 1
 
 
@@ -501,9 +503,16 @@ int main(int argc, const char **argv)
         the_PCM.getAllCounterStates(pcm_before.system, pcm_before.sockets, pcm_before.cores);
 #endif
 
+        ch::high_resolution_clock::duration d_mmap_total(0), d_sort_total(0), d_merge_total(0);
+
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
+#ifndef NDEBUG
+            std::cerr << "i = " << i << ":\n";
+#endif
+
             /* MMap and fetch the next bucket. */
             if (i < NUM_BUCKETS) {
+                const auto t_mmap_begin = ch::high_resolution_clock::now();
                 const auto bucket_id = i;
                 assert(bucket_id < NUM_BUCKETS);
                 auto &bucket = buckets[bucket_id];
@@ -518,21 +527,20 @@ int main(int argc, const char **argv)
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    //const auto t_map_before = ch::high_resolution_clock::now();
                     bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
                     if (bucket.addr == MAP_FAILED)
                         err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
                     if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
                         warn("Failed to advise access to the bucket file");
                     __builtin_prefetch(bucket.addr);
-                    //const auto t_map_after = ch::high_resolution_clock::now();
-                    //std::cerr << "MMap and MADV_WILLNEED of " << double(bucket.size) / (1024 * 1024)
-                              //<< " MiB took "
-                              //<< ch::duration_cast<ch::nanoseconds>(t_map_after - t_map_before).count() / 1e6
-                              //<< " ms\n";
                 }
+                const auto t_mmap_end = ch::high_resolution_clock::now();
+                d_mmap_total += t_mmap_end - t_mmap_begin;
+                std::cerr << "MMap bucket took "
+                          << ch::duration_cast<ch::nanoseconds>(t_mmap_end - t_mmap_begin).count() / 1e6 << " ms\n";
             }
 
+            const auto t_sort_bucket_begin = ch::high_resolution_clock::now();
             if (i >= 1 and i <= NUM_BUCKETS) {
                 const auto bucket_id = i - 1;
                 assert(bucket_id < NUM_BUCKETS);
@@ -552,7 +560,14 @@ int main(int argc, const char **argv)
                 auto &bucket = buckets[bucket_id];
 
                 if (bucket.size) {
-                    bucket.sorter.join(); // wait for the sorther thread to finish sorting the bucket
+                    bucket.sorter.join(); // wait for the sorter thread to finish sorting the bucket
+
+                    const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
+                    d_sort_total += t_merge_bucket_begin - t_sort_bucket_begin;
+
+                    std::cerr << "  Sort bucket took "
+                              << ch::duration_cast<ch::nanoseconds>(t_merge_bucket_begin - t_sort_bucket_begin).count() / 1e6
+                              << " ms\n";
 
                     const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                     const auto bucket_begin = reinterpret_cast<record*>(bucket.addr);
@@ -564,31 +579,53 @@ int main(int argc, const char **argv)
                     const auto p_out_old = p_out;
 
 #ifndef NDEBUG
-                    std::cerr << "Merge bucket " << bucket_id << " of " << num_records_in_bucket
+                    std::cerr << "  Merge bucket " << bucket_id << " of " << num_records_in_bucket
                               << " sorted records.\n";
 #endif
+                    /* If the in-memory data is not yet finished, merge. */
+                    if (p_sorted != sorted_end) {
+                        /* Merge this bucket with the sorted data. */
+                        while (p_bucket != bucket_end and p_sorted != sorted_end) {
+                            //IACA_START;
+                            assert(p_bucket <= bucket_end);
+                            assert(p_sorted <= sorted_end);
+                            assert(p_out < reinterpret_cast<record*>(output) + num_records);
 
-                    /* Merge this bucket with the sorted data. */
-                    const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
-                    while (p_bucket != bucket_end and p_sorted != sorted_end) {
-                        assert(p_bucket <= bucket_end);
-                        assert(p_sorted <= sorted_end);
-                        assert(p_out < reinterpret_cast<record*>(output) + num_records);
-                        const auto cmp = memcmp(p_bucket->key.data(), p_sorted->key.data(), sizeof(key_type));
-                        *p_out++ = cmp <= 0 ? *p_bucket++ : *p_sorted++;
+#if 1
+                            const bool less = *p_bucket < *p_sorted;
+                            *p_out++ = less ? *p_bucket++ : *p_sorted++;
+#else
+                            *p_out++ = *p_bucket < *p_sorted ? *p_bucket++ : *p_sorted++;
+#endif
+                        }
+                        //IACA_END;
+                        assert(p_out - p_out_old == (p_sorted - p_sorted_old) + (p_bucket - bucket_begin) and
+                                "incorrect number of elements written to output");
+                        assert(std::is_sorted(p_out_old, p_out) and "output not sorted");
+                        assert ((p_bucket == bucket_end) != (p_sorted == sorted_end) and
+                                "either the bucket is finished and sorted in-memory data remains or vice versa");
+                    } else {
+#ifndef NDEBUG
+                        std::cerr << "  In-memory sorted data is already merged.  Flush bucket to output.\n";
+#endif
                     }
-                    assert ((p_bucket == bucket_end) != (p_sorted == sorted_end) and
-                            "either the bucket is finished and sorted in-memory data remains or vice versa");
-                    /* Finish the bucket, if necessary. */
+
+                    /* Finish the bucket. */
                     while (p_bucket != bucket_end)
                         *p_out++ = *p_bucket++;
-                    const auto t_merge_bucket_end = ch::high_resolution_clock::now();
 
-#ifndef NDEBUG
-                    std::cerr << "Time to merge bucket " << bucket_id << ": "
-                        << ch::duration_cast<ch::milliseconds>(t_merge_bucket_end - t_merge_bucket_begin).count() / 1e3
-                        << "s\n";
-#endif
+                    assert(p_out - p_out_old == (p_sorted - p_sorted_old) + (p_bucket - bucket_begin) and
+                            "incorrect number of elements written to output");
+                    assert(std::is_sorted(p_out_old, p_out) and "output not sorted");
+
+                    const auto t_merge_bucket_end = ch::high_resolution_clock::now();
+                    d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
+
+                    std::cerr
+                        << "  Merge bucket of " << double(bucket.size) / (1024 * 1024) << " MiB into a total of "
+                        << double((p_out - p_out_old) * sizeof(record)) / (1024 * 1024) << " MiB took "
+                        << ch::duration_cast<ch::nanoseconds>(t_merge_bucket_end - t_merge_bucket_begin).count() / 1e6
+                        << " ms\n";
 
                     /* Release resources. */
                     const uintptr_t unmap_sorted_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
@@ -598,19 +635,29 @@ int main(int argc, const char **argv)
                     const uintptr_t unmap_out_end = reinterpret_cast<uintptr_t>(p_out) & ~(uintptr_t(PAGESIZE) - 1);
                     const ptrdiff_t unmap_out_length = unmap_out_end - unmap_out_begin;
 
-
                     if (unmap_sorted_length) {
-                        madvise(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length, MADV_DONTNEED);
+                        //madvise(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length, MADV_DONTNEED);
                         if (munmap(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length))
                             err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
                     }
                     if (unmap_out_length) {
-                        madvise(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length, MADV_DONTNEED);
+                        //madvise(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length, MADV_DONTNEED);
                         if (munmap(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length))
                             err(EXIT_FAILURE, "Failed to unmap the solved part of the mmap'd output file");
                     }
                     if (munmap(bucket.addr, bucket.size))
                         err(EXIT_FAILURE, "Failed to unmap the bucket");
+
+                    const auto t_resource_end = ch::high_resolution_clock::now();
+                    d_mmap_total += t_resource_end - t_merge_bucket_end;
+
+                    std::cerr << "  Unmap resources took "
+                              << ch::duration_cast<ch::nanoseconds>(t_resource_end - t_merge_bucket_end).count() / 1e6
+                              << " ms\n";
+                } else {
+#ifndef NDEBUG
+                    std::cerr << "  Empty bucket.  Skip.\n";
+#endif
                 }
                 if (fclose(bucket.file))
                     warn("Failed to close bucket file");
@@ -672,6 +719,10 @@ int main(int argc, const char **argv)
                       << "partition: " << d_partition_s << " s (" << throughput_partition_mbs << " MiB/s)\n"
                       << "merge:     " << d_merge_s << " s (" << throughput_merge_mbs << " MiB/s)\n"
                       << "total:     " << d_total_s << " s\n";
+
+            std::cerr << "d_mmap_total: " << ch::duration_cast<ch::milliseconds>(d_mmap_total).count() / 1e3 << " s\n"
+                      << "d_sort_total: " << ch::duration_cast<ch::milliseconds>(d_sort_total).count() / 1e3 << " s\n"
+                      << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n";
         }
 
 #ifdef SUBMISSION
