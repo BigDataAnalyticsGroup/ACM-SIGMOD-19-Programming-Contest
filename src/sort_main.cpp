@@ -53,8 +53,6 @@
 #include "cpucounters.h"
 #endif
 
-#define READ_CONCURRENT 1
-
 
 namespace ch = std::chrono;
 using namespace std::chrono_literals;
@@ -507,7 +505,6 @@ int main(int argc, const char **argv)
 #ifndef NDEBUG
             std::cerr << "i = " << i << ":\n";
 #endif
-
             /* MMap and fetch the next bucket. */
             if (i < NUM_BUCKETS) {
                 const auto t_mmap_begin = ch::high_resolution_clock::now();
