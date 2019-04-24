@@ -550,7 +550,7 @@ int main(int argc, const char **argv)
                     record *records = reinterpret_cast<record*>(bucket.addr);
                     const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                     bucket.sorter = std::thread(american_flag_sort_parallel,
-                                                records, records + num_records_in_bucket, 0);
+                                                records, records + num_records_in_bucket, 1);
                 }
             }
 
