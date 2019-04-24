@@ -273,9 +273,9 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
     /* Compute a global histogram by computing a histogram for each thread region. */
     {
         auto histograms = new histogram_t<unsigned, NUM_BUCKETS>[NUM_THREADS_HISTOGRAM];
-        auto compute_hist = [histograms](unsigned tid, record *first, record *last) {
+        auto compute_hist = [histograms, digit](unsigned tid, record *first, record *last) {
             assert(tid < NUM_THREADS_HISTOGRAM);
-            histograms[tid] = compute_histogram(first, last, 0);
+            histograms[tid] = compute_histogram(first, last, digit);
         };
         std::array<std::thread, NUM_THREADS_HISTOGRAM> threads;
         const auto num_records_per_thread = num_records / NUM_THREADS_HISTOGRAM;
