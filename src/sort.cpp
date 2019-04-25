@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstring>
 #include <err.h>
+#include <parallel/algorithm>
 #include <sched.h>
 #include <sched.h>
 #include <thread>
@@ -443,6 +444,7 @@ bucket_finished:;
      * sorting from a queue. */
     const auto next_digit = digit + 1; ///< next digit to sort by
     if (next_digit != 10) {
+#if 0 // parallelize among the buckets
         std::atomic_uint_fast32_t bucket_counter(0);
         auto recurse = [&]() {
             unsigned bucket_id;
@@ -467,5 +469,19 @@ bucket_finished:;
             threads[tid] = std::thread(recurse);
         for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
             threads[tid].join();
+#else // parallelize within the buckets
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            const auto num_records = histogram[bucket_id];
+            const auto bucket_first = buckets[bucket_id];
+            const auto bucket_last = bucket_first + num_records;
+            if (num_records > 2000)
+                american_flag_sort_parallel(bucket_first, bucket_last, next_digit);
+            else if (num_records > 500)
+                __gnu_parallel::sort(bucket_first, bucket_last);
+            else if (num_records)
+                std::sort(bucket_first, bucket_last);
+
+        }
+#endif
     }
 }
