@@ -325,19 +325,15 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
             buckets_by_size[bucket_id] = { .num_records = histogram[bucket_id], .first = buckets[bucket_id] };
 
-        const std::size_t mt_threshold = num_records / NUM_THREADS_RECURSION;
-        std::cerr << "MT threshold is " << mt_threshold << " records.\n";
-
         std::sort(buckets_by_size, buckets_by_size + NUM_BUCKETS, [](auto first, auto second) {
             return first.num_records > second.num_records;
         });
 
         /* Sort the buckets of "extreme" size first using all threads. */
+        const std::size_t mt_threshold = num_records / NUM_THREADS_RECURSION;
         for (;; ++bucket_counter) {
             const auto &the_bucket = buckets_by_size[bucket_counter];
             if (the_bucket.num_records < mt_threshold) break;
-            std::cerr << "  Bucket " << bucket_counter << " with " << the_bucket.num_records
-                      << " records is above threshold and requires parallel recursion.\n";
             american_flag_sort_parallel(the_bucket.first, the_bucket.first + the_bucket.num_records, next_digit);
         }
 
