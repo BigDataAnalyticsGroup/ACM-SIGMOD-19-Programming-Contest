@@ -72,7 +72,11 @@ constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 26UL * 1024 * 1024 * 1024; // 26 G
 constexpr unsigned NUM_THREADS_READ = 4;
 constexpr unsigned NUM_THREADS_PARTITION = 6;
 constexpr const char * const OUTPUT_PATH = "./buckets";
+#ifndef NDEBUG
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 1UL * 1024 * 1024 * 1024; // 2 GiB
+#else
 constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 2UL * 1024 * 1024 * 1024; // 2 GiB
+#endif
 #endif
 
 
