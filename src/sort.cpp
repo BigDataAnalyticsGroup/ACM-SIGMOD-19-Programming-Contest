@@ -310,51 +310,57 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
     bind_to_cpus(ALL_CPUS);
 #endif
 
-    /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
-     * sorting from a queue. */
+    /*----- Recursively sort the buckets. ----------------------------------------------------------------------------*/
     const auto next_digit = digit + 1; ///< next digit to sort by
     if (next_digit != 10) {
-#if 1 // parallelize among the buckets
+        const std::size_t num_records = last - first;
         std::atomic_uint_fast32_t bucket_counter(0);
+
+        /* Sort buckets by their size in descending order. */
+        struct
+        {
+            unsigned num_records;
+            record *first;
+        } buckets_by_size[NUM_BUCKETS];
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
+            buckets_by_size[bucket_id] = { .num_records = histogram[bucket_id], .first = buckets[bucket_id] };
+
+        const std::size_t mt_threshold = num_records / NUM_THREADS_RECURSION;
+        std::cerr << "MT threshold is " << mt_threshold << " records.\n";
+
+        std::sort(buckets_by_size, buckets_by_size + NUM_BUCKETS, [](auto first, auto second) {
+            return first.num_records > second.num_records;
+        });
+
+        /* Sort the buckets of "extreme" size first using all threads. */
+        for (;; ++bucket_counter) {
+            const auto &the_bucket = buckets_by_size[bucket_counter];
+            if (the_bucket.num_records < mt_threshold) break;
+            std::cerr << "  Bucket " << bucket_counter << " with " << the_bucket.num_records
+                      << " records is above threshold and requires parallel recursion.\n";
+            american_flag_sort_parallel(the_bucket.first, the_bucket.first + the_bucket.num_records, next_digit);
+        }
+
+        /* Sort the remaining buckets simultaneously with a worklist. */
         auto recurse = [&]() {
             unsigned bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
-                const auto num_records = histogram[bucket_id];
-                if (num_records > 1) {
-                    auto thread_first = buckets[bucket_id];
-                    auto thread_last = thread_first + num_records;
-                    assert(first <= thread_first);
-                    assert(thread_last <= last);
-                    assert(thread_first <= thread_last);
-                    select_sort_algorithm(thread_first, thread_last, next_digit);
-                }
+                const auto &the_bucket = buckets_by_size[bucket_id];
+                if (the_bucket.num_records > 1)
+                    select_sort_algorithm(the_bucket.first, the_bucket.first + the_bucket.num_records, next_digit);
             }
         };
-
         std::array<std::thread, NUM_THREADS_RECURSION> threads;
         for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
             threads[tid] = std::thread(recurse);
         for (unsigned tid = 0; tid != NUM_THREADS_RECURSION; ++tid)
             threads[tid].join();
-#else // parallelize within the buckets
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            const auto num_records = histogram[bucket_id];
-            const auto bucket_first = buckets[bucket_id];
-            const auto bucket_last = bucket_first + num_records;
-            if (num_records > 2000)
-                american_flag_sort_parallel(bucket_first, bucket_last, next_digit);
-            else if (num_records > 500)
-                __gnu_parallel::sort(bucket_first, bucket_last);
-            else if (num_records)
-                std::sort(bucket_first, bucket_last);
-
-        }
-#endif
     }
 }
 
 void select_sort_algorithm(record *first, record *last, const unsigned digit, const unsigned num_threads)
 {
+    (void) num_threads; // TODO
     const std::size_t num_records = last - first;
     if (num_records > 50)
         american_flag_sort(first, last, digit);
