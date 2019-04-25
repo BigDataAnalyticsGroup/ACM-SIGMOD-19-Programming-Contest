@@ -104,13 +104,14 @@ histogram_t<unsigned, NUM_BUCKETS> compute_histogram_parallel(const record * con
 
     /* Accumulate the histograms. */
     histogram_t<unsigned, NUM_BUCKETS> histogram{ {0} };
-    for (unsigned tid = 0; tid != num_threads; ++tid)
+    for (unsigned tid = 0; tid != num_threads; ++tid) {
         threads[tid].join();
         histogram += histograms[tid];
+    }
     assert(histogram.count() == num_records and "incorrect histogram accumulation");
+
     delete[] histograms;
     delete[] threads;
-
     return histogram;
 }
 
