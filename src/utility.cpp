@@ -24,8 +24,11 @@
 
 #include "utility.hpp"
 
+#include <cassert>
 #include <err.h>
 #include <fcntl.h>
+#include <sched.h>
+#include <thread>
 #include <unistd.h>
 
 
@@ -41,4 +44,25 @@ void clear_page_cache()
     }
     write(fd, "1", 1);
     close(fd);
+}
+
+void bind_to_cpus(std::initializer_list<unsigned> cpus)
+{
+    const unsigned cpu_count = std::thread::hardware_concurrency();
+    assert(cpus.size() <= cpu_count);
+    cpu_set_t *cpu_set = CPU_ALLOC(cpu_count);
+    if (not cpu_set)
+        err(EXIT_FAILURE, "Failed to allocate CPU_SET of 20 CPUs on socket 0");
+    const auto size = CPU_ALLOC_SIZE(cpu_count);
+    CPU_ZERO_S(size, cpu_set);
+    for (auto cpu : cpus) {
+        assert(cpu < cpu_count);
+        CPU_SET_S(cpu, size, cpu_set);
+    }
+    assert(CPU_COUNT_S(size, cpu_set) == int(cpus.size()) and "allocated incorrect number of CPUs");
+
+    /* Bind process and all children to the desired logical CPUs. */
+    sched_setaffinity(0 /* this thread */, size, cpu_set);
+
+    CPU_FREE(cpu_set);
 }

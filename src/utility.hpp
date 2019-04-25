@@ -26,6 +26,7 @@
 
 
 #include <cstdlib>
+#include <initializer_list>
 
 
 template<typename T>
@@ -41,3 +42,5 @@ template<typename T>
 T * stack_allocate(std::size_t count) { return static_cast<T*>(alloca(count * sizeof(T))); }
 
 void clear_page_cache();
+
+void bind_to_cpus(std::initializer_list<unsigned> cpus);

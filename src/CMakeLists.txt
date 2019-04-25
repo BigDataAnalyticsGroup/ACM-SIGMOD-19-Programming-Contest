@@ -3,6 +3,7 @@ add_library(
     rand16.cpp
     record.cpp
     sort.cpp
+    utility.cpp
     )
 
 #add_executable(read_write read_write.cpp)

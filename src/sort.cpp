@@ -25,6 +25,7 @@
 
 #include "sort.hpp"
 
+#include "utility.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -52,6 +53,23 @@ constexpr unsigned NUM_HW_CORES_PER_SOCKET = 10;
 constexpr unsigned NUM_THREADS_PER_HW_CORE = 2;
 constexpr unsigned NUM_LOGICAL_CORES_PER_SOCKET = NUM_HW_CORES_PER_SOCKET * NUM_THREADS_PER_HW_CORE;
 constexpr unsigned NUM_LOGICAL_CORES_TOTAL = NUM_LOGICAL_CORES_PER_SOCKET * NUM_SOCKETS;
+
+constexpr std::initializer_list<unsigned> ALL_CPUS = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+    20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+};
+
+constexpr std::initializer_list<unsigned> SOCKET0_CPUS = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+};
+
+constexpr std::initializer_list<unsigned> SOCKET1_CPUS = {
+    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+};
 
 constexpr unsigned NUM_THREADS_HISTOGRAM = NUM_LOGICAL_CORES_TOTAL;
 constexpr unsigned NUM_THREADS_PARTITIONING = NUM_LOGICAL_CORES_PER_SOCKET;
@@ -285,46 +303,12 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
     const auto buckets = compute_buckets(first, last, histogram);
 
 #ifdef SUBMISSION
-    /* By evaluation, we figured that logical cores 0-9,20-29 belong to NUMA region 0.  Explicitly bind this process to
-     * these logical cores to avoid NUMA.  */
-    {
-        cpu_set_t *cpus = CPU_ALLOC(40);
-        if (not cpus)
-            err(EXIT_FAILURE, "Failed to allocate CPU_SET of 20 CPUs on socket 0");
-        const auto size = CPU_ALLOC_SIZE(40);
-        CPU_ZERO_S(size, cpus);
-        for (int cpu = 0; cpu != 10; ++cpu)
-            CPU_SET_S(cpu, size, cpus);
-        for (int cpu = 20; cpu != 30; ++cpu)
-            CPU_SET_S(cpu, size, cpus);
-        assert(CPU_COUNT_S(size, cpus) == 20 and "allocated incorrect number of logical CPUs");
-
-        /* Bind process and all children to the desired logical CPUs. */
-        sched_setaffinity(0 /* this thread */, size, cpus);
-
-        CPU_FREE(cpus);
-    }
+    bind_to_cpus(SOCKET0_CPUS);
 #endif
-
     /* Concurrently distribute items into buckets. */
     american_flag_sort_partitioning_parallel(histogram, buckets, digit, NUM_THREADS_PARTITIONING);
-
 #ifdef SUBMISSION
-    {
-        cpu_set_t *cpus = CPU_ALLOC(40);
-        if (not cpus)
-            err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
-        const auto size = CPU_ALLOC_SIZE(40);
-        CPU_ZERO_S(size, cpus);
-        for (int cpu = 0; cpu != NUM_LOGICAL_CORES_TOTAL; ++cpu)
-            CPU_SET_S(cpu, size, cpus);
-        assert(CPU_COUNT_S(size, cpus) == NUM_LOGICAL_CORES_TOTAL and "allocated incorrect number of logical CPUs");
-
-        /* Bind process and all children to the desired logical CPUs. */
-        sched_setaffinity(0 /* this thread */, size, cpus);
-
-        CPU_FREE(cpus);
-    }
+    bind_to_cpus(ALL_CPUS);
 #endif
 
     /* Recursively sort the buckets.  Use a thread pool of worker threads and let the workers claim buckets for
