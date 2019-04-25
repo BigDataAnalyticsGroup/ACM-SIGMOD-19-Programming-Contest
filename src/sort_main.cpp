@@ -60,7 +60,6 @@ using namespace std::chrono_literals;
 constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
 constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
 //constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
-constexpr std::size_t FILE_SIZE_LARGE   = 60UL * 1000 * 1000 * 1000; // 60 GB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -627,12 +626,6 @@ int main(int argc, const char **argv)
 
                     const auto t_merge_bucket_end = ch::high_resolution_clock::now();
                     d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
-
-                    std::cerr
-                        << "  Merge bucket of " << double(bucket.size) / (1024 * 1024) << " MiB into a total of "
-                        << double((p_out - p_out_old) * sizeof(record)) / (1024 * 1024) << " MiB took "
-                        << ch::duration_cast<ch::nanoseconds>(t_merge_bucket_end - t_merge_bucket_begin).count() / 1e6
-                        << " ms\n";
 
                     /* Release resources. */
                     const uintptr_t unmap_sorted_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
