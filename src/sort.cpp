@@ -288,8 +288,7 @@ void american_flag_sort(record * const first, record * const last, const unsigne
     if (next_digit != 10) {
         auto p = first;
         for (auto n : histogram) {
-            if (n > 1)
-                american_flag_sort(p, p + n, next_digit);
+            select_sort_algorithm(p, p + n, next_digit);
             p += n;
         }
     }
@@ -315,7 +314,7 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
      * sorting from a queue. */
     const auto next_digit = digit + 1; ///< next digit to sort by
     if (next_digit != 10) {
-#if 0 // parallelize among the buckets
+#if 1 // parallelize among the buckets
         std::atomic_uint_fast32_t bucket_counter(0);
         auto recurse = [&]() {
             unsigned bucket_id;
@@ -327,10 +326,7 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
                     assert(first <= thread_first);
                     assert(thread_last <= last);
                     assert(thread_first <= thread_last);
-                    if (num_records > AMERICAN_FLAG_SORT_MIN_SIZE)
-                        my_hybrid_sort_helper(thread_first, thread_last, next_digit);
-                    else
-                        std::sort(thread_first, thread_last);
+                    select_sort_algorithm(thread_first, thread_last, next_digit);
                 }
             }
         };
@@ -355,4 +351,13 @@ void american_flag_sort_parallel(record * const first, record * const last, cons
         }
 #endif
     }
+}
+
+void select_sort_algorithm(record *first, record *last, const unsigned digit, const unsigned num_threads)
+{
+    const std::size_t num_records = last - first;
+    if (num_records > 50)
+        american_flag_sort(first, last, digit);
+    else
+        std::sort(first, last);
 }

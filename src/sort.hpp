@@ -82,3 +82,6 @@ void my_hybrid_sort(record *first, record *last);
 
 /** Performs a simple American Flag Sort and falls back to std::sort for small ranges. */
 void my_hybrid_sort_MT(record *first, record *last);
+
+/** Selects an appropriate sorting algorithm based on the size of the input. */
+void select_sort_algorithm(record *first, record *last, const unsigned digit, const unsigned num_threads = 1);
