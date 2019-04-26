@@ -532,6 +532,11 @@ int main(int argc, const char **argv)
             assert(sum == num_bytes_to_partition and "incorrect computation of the bucket size running sum");
         }
 
+        /* Sort buckets by file size. */
+        std::sort(buckets.begin(), buckets.end(), [](const auto &first, const auto &second) {
+            return first.size < second.size;
+        });
+
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
 #ifndef NDEBUG
             std::cerr << "i = " << i << "\n";
