@@ -534,11 +534,9 @@ int main(int argc, const char **argv)
             std::cerr << "i = " << i << "\n";
 #endif
 
-            /* MMap and fetch the next bucket. */
+            /* Load the next bucket. */
             if (i < NUM_BUCKETS) {
-                const auto bucket_id = i;
-                assert(bucket_id < NUM_BUCKETS);
-                auto &bucket = buckets[bucket_id];
+                auto &bucket = buckets[i];
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
@@ -649,8 +647,6 @@ int main(int argc, const char **argv)
                         if (munmap(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length))
                             err(EXIT_FAILURE, "Failed to unmap the solved part of the mmap'd output file");
                     }
-                    //if (munmap(bucket.addr, bucket.size))
-                        //err(EXIT_FAILURE, "Failed to unmap the bucket");
                     free(bucket.addr);
 
                     const auto t_resource_end = ch::high_resolution_clock::now();
