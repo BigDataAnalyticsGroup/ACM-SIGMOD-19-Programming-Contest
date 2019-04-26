@@ -49,6 +49,11 @@ histogram_t<unsigned, NUM_BUCKETS> compute_histogram(const record * const first,
                                                      const record * const last,
                                                      const unsigned digit);
 
+histogram_t<unsigned, NUM_BUCKETS> compute_histogram_parallel(const record * const first,
+                                                              const record * const last,
+                                                              const unsigned digit,
+                                                              const unsigned num_threads);
+
 /** Computes the bucket locations given the histogram. */
 std::array<record*, NUM_BUCKETS> compute_buckets(record * const first,
                                                  record * const last,
