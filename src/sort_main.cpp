@@ -638,12 +638,10 @@ int main(int argc, const char **argv)
                     const ptrdiff_t unmap_out_length = unmap_out_end - unmap_out_begin;
 
                     if (unmap_sorted_length) {
-                        //madvise(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length, MADV_DONTNEED);
                         if (munmap(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length))
                             err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
                     }
                     if (unmap_out_length) {
-                        //madvise(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length, MADV_DONTNEED);
                         if (munmap(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length))
                             err(EXIT_FAILURE, "Failed to unmap the solved part of the mmap'd output file");
                     }
