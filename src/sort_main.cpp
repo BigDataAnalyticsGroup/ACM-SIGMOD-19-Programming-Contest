@@ -551,10 +551,7 @@ int main(int argc, const char **argv)
             }
 
             if (i >= 1 and i <= NUM_BUCKETS) {
-                const auto bucket_id = i - 1;
-                assert(bucket_id < NUM_BUCKETS);
-                auto &bucket = buckets[bucket_id];
-
+                auto &bucket = buckets[i - 1];
                 if (bucket.size) {
                     const auto t_wait_for_load_bucket_before = ch::high_resolution_clock::now();
                     bucket.loader.join();
