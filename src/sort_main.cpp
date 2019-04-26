@@ -317,6 +317,7 @@ int main(int argc, const char **argv)
 
         /* Create the output files for the buckets. */
         struct bucket_t {
+            std::size_t id; ///< the original id of the bucket; in [0, 255]
             FILE *file; ///< the associated stream object
             void *buffer; ///< the buffer assigned to the stream object
             std::atomic_uint_fast64_t size = 0UL; ///< the size of the bucket in bytes
@@ -342,6 +343,7 @@ int main(int argc, const char **argv)
                 if (setvbuf(file, static_cast<char*>(buffer), _IOFBF, buffer_size))
                     err(EXIT_FAILURE, "Failed to set custom buffer for file");
 
+                buckets[bucket_id].id = bucket_id;
                 buckets[bucket_id].file = file;
                 buckets[bucket_id].buffer = buffer;
             }
