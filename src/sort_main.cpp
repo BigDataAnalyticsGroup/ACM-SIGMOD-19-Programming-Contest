@@ -511,6 +511,18 @@ int main(int argc, const char **argv)
             d_merge_total(0),
             d_unmap_total(0);
 
+        /* Flush all buckets and get the size. */
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            auto &bucket = buckets[bucket_id];
+            if (fflush(bucket.file))
+                err(EXIT_FAILURE, "Failed to flush bucket %lu", bucket_id);
+            int fd = fileno(bucket.file);
+            struct stat status;
+            if (fstat(fd, &status))
+                err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
+            bucket.size = status.st_size;
+        }
+
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
 #ifndef NDEBUG
             std::cerr << "i = " << i << "\n";
@@ -521,21 +533,13 @@ int main(int argc, const char **argv)
                 const auto bucket_id = i;
                 assert(bucket_id < NUM_BUCKETS);
                 auto &bucket = buckets[bucket_id];
-                if (fflush(bucket.file))
-                    err(EXIT_FAILURE, "Failed to flush bucket %lu", bucket_id);
-                int fd = fileno(bucket.file);
-                struct stat status;
-                if (fstat(fd, &status))
-                    err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
-                bucket.size = status.st_size;
-
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    bucket.loader = std::thread([&bucket, fd, &d_load_bucket_total]() {
+                    bucket.loader = std::thread([&bucket, &d_load_bucket_total]() {
                         const auto t_load_bucket_begin = ch::high_resolution_clock::now();
                         bucket.addr = malloc(bucket.size);
-                        read_concurrent(fd, bucket.addr, bucket.size, 0);
+                        read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
                         const auto t_load_bucket_end = ch::high_resolution_clock::now();
                         d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                     });
