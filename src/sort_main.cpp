@@ -648,25 +648,28 @@ int main(int argc, const char **argv)
                 d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
 
                 /* Release resources. */
-                constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
-                const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
-                const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
-                const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
-                const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
-                const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
-                const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
+                std::thread([=, &bucket]() {
+                    constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
+                    const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                    const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
+                    const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
+                    const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                    const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
+                    const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
 
-                if (dontneed_sorted_length)
-                    munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
-                if (dontneed_out_length)
-                    munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
-                free(bucket.addr);
+                    if (dontneed_sorted_length)
+                        munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
+                    if (dontneed_out_length)
+                        munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
+                    free(bucket.addr);
+
+                    if (fclose(bucket.file))
+                        warn("Failed to close bucket file");
+                    free(bucket.buffer);
+                }).detach();
 
                 const auto t_resource_end = ch::high_resolution_clock::now();
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
-                if (fclose(bucket.file))
-                    warn("Failed to close bucket file");
-                free(bucket.buffer);
             }
         }
 
