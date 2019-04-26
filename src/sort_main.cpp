@@ -320,7 +320,7 @@ int main(int argc, const char **argv)
             std::size_t id; ///< the original id of the bucket; in [0, 255]
             FILE *file; ///< the associated stream object
             void *buffer; ///< the buffer assigned to the stream object
-            std::atomic_uint_fast64_t size = 0UL; ///< the size of the bucket in bytes
+            std::size_t size; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the mapped memory region
             std::thread loader; ///< the thread that loads the bucket into memory
             std::thread sorter; ///< the thread that sorts the bucket
@@ -517,16 +517,23 @@ int main(int argc, const char **argv)
             d_merge_total(0),
             d_unmap_total(0);
 
-        /* Flush all buckets and get the size. */
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            auto &bucket = buckets[bucket_id];
-            if (fflush(bucket.file))
-                err(EXIT_FAILURE, "Failed to flush bucket %lu", bucket_id);
-            int fd = fileno(bucket.file);
-            struct stat status;
-            if (fstat(fd, &status))
-                err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
-            bucket.size = status.st_size;
+        /* Flush all buckets, get the size, and compute the running sum of sizes. */
+        std::array<unsigned, NUM_BUCKETS> running_sum;
+        {
+            unsigned sum = 0;
+            for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+                auto &bucket = buckets[bucket_id];
+                if (fflush(bucket.file))
+                    err(EXIT_FAILURE, "Failed to flush bucket %lu", bucket_id);
+                int fd = fileno(bucket.file);
+                struct stat status;
+                if (fstat(fd, &status))
+                    err(EXIT_FAILURE, "Failed to get status of bucket %lu file", bucket_id);
+                bucket.size = status.st_size;
+                running_sum[bucket_id] = sum;
+                sum += bucket.size;
+            }
+            assert(sum == num_bytes_to_partition and "incorrect computation of the bucket size running sum");
         }
 
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
