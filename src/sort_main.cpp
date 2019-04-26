@@ -301,12 +301,16 @@ int main(int argc, const char **argv)
 
         /* Sort the records in-memory. */
         std::cerr << "Sort " << num_records_to_sort << " records in-memory in a separate thread.\n";
-        std::thread thread_sort = std::thread([in_memory_buffer, num_records_to_sort, &t_begin_sort, &t_end_sort]() {
+        histogram_t<unsigned, NUM_BUCKETS> in_memory_histogram;
+        std::array<record*, NUM_BUCKETS> in_memory_buckets;
+        std::thread thread_sort = std::thread([&]() {
             record * const records = reinterpret_cast<record*>(in_memory_buffer);
             t_begin_sort = ch::high_resolution_clock::now();
             american_flag_sort_parallel(records, records + num_records_to_sort, 0);
             assert(std::is_sorted(records, records + num_records_to_sort));
             t_end_sort = ch::high_resolution_clock::now();
+            in_memory_histogram = compute_histogram_parallel(records, records + num_records_to_sort, 0, 10);
+            in_memory_buckets = compute_buckets(records, records + num_records_to_sort, in_memory_histogram);
         });
 
         const auto t_begin_partition = ch::high_resolution_clock::now();
