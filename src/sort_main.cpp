@@ -321,7 +321,7 @@ int main(int argc, const char **argv)
             FILE *file; ///< the associated stream object
             void *buffer; ///< the buffer assigned to the stream object
             std::size_t size; ///< the size of the bucket in bytes
-            void *addr = nullptr; ///< the address of the mapped memory region
+            void *addr = nullptr; ///< the address of the memory region of the loaded bucket
             std::thread loader; ///< the thread that loads the bucket into memory
             std::thread sorter; ///< the thread that sorts the bucket
         };
