@@ -317,7 +317,7 @@ int main(int argc, const char **argv)
             void *buffer; ///< the buffer assigned to the stream object
             std::atomic_uint_fast64_t size = 0UL; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the mapped memory region
-            std::thread mapper; ///< the thread that maps and populates the memory
+            std::thread loader; ///< the thread that loads the bucket into memory
             std::thread sorter; ///< the thread that sorts the bucket
         };
         std::array<bucket_t, NUM_BUCKETS> buckets;
@@ -504,8 +504,8 @@ int main(int argc, const char **argv)
 #endif
 
         ch::high_resolution_clock::duration
-            d_mmap_total(0),
-            d_waiting_for_mmap_total(0),
+            d_load_bucket_total(0),
+            d_wait_for_load_bucket_total(0),
             d_sort_total(0),
             d_waiting_for_sort_total(0),
             d_merge_total(0),
@@ -532,16 +532,20 @@ int main(int argc, const char **argv)
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    bucket.mapper = std::thread([&bucket, fd, bucket_id, &d_mmap_total]() {
-                        const auto t_mmap_begin = ch::high_resolution_clock::now();
-                        bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_POPULATE, fd, 0);
+                    bucket.loader = std::thread([&bucket, fd, bucket_id, &d_load_bucket_total]() {
+                        const auto t_load_bucket_begin = ch::high_resolution_clock::now();
+                        bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
                         if (bucket.addr == MAP_FAILED)
                             err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
-                        //if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
-                            //warn("Failed to advise access to the bucket file");
-                        __builtin_prefetch(bucket.addr);
-                        const auto t_mmap_end = ch::high_resolution_clock::now();
-                        d_mmap_total += t_mmap_end - t_mmap_begin;
+                        if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
+                            warn("Failed to advise access to the bucket file");
+                        //std::thread([&bucket]() {
+                            //auto p = reinterpret_cast<uint8_t*>(bucket.addr);
+                            //for (auto end = p + bucket.size; p < end; p += PAGESIZE)
+                                //dead_code += *p; //__builtin_prefetch(p);
+                        //}).detach();
+                        const auto t_load_bucket_end = ch::high_resolution_clock::now();
+                        d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                     });
                 }
             }
@@ -552,10 +556,10 @@ int main(int argc, const char **argv)
                 auto &bucket = buckets[bucket_id];
 
                 if (bucket.size) {
-                    const auto t_wait_for_mmap_before = ch::high_resolution_clock::now();
-                    bucket.mapper.join();
-                    const auto t_wait_for_mmap_after = ch::high_resolution_clock::now();
-                    d_waiting_for_mmap_total += t_wait_for_mmap_after - t_wait_for_mmap_before;
+                    const auto t_wait_for_load_bucket_before = ch::high_resolution_clock::now();
+                    bucket.loader.join();
+                    const auto t_wait_for_load_bucket_after = ch::high_resolution_clock::now();
+                    d_wait_for_load_bucket_total += t_wait_for_load_bucket_after - t_wait_for_load_bucket_before;
 
                     record *records = reinterpret_cast<record*>(bucket.addr);
                     const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
@@ -716,8 +720,8 @@ int main(int argc, const char **argv)
                       << "merge:     " << d_merge_s << " s (" << throughput_merge_mbs << " MiB/s)\n"
                       << "total:     " << d_total_s << " s\n";
 
-            std::cerr << "d_mmap_total: " << ch::duration_cast<ch::milliseconds>(d_mmap_total).count() / 1e3 << " s\n"
-                      << "d_waiting_for_mmap_total: " << ch::duration_cast<ch::milliseconds>(d_waiting_for_mmap_total).count() / 1e3 << " s\n"
+            std::cerr << "d_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_load_bucket_total).count() / 1e3 << " s\n"
+                      << "d_wait_for_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_wait_for_load_bucket_total).count() / 1e3 << " s\n"
                       << "d_sort_total: " << ch::duration_cast<ch::milliseconds>(d_sort_total).count() / 1e3 << " s\n"
                       << "d_waiting_for_sort_total: " << ch::duration_cast<ch::milliseconds>(d_waiting_for_sort_total).count() / 1e3 << " s\n"
                       << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n"
