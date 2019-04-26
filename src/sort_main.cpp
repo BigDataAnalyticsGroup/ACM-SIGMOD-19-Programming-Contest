@@ -660,10 +660,10 @@ int main(int argc, const char **argv)
                 const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
                 const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
 
-                //if (dontneed_sorted_length)
-                    //madvise(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length, MADV_DONTNEED);
-                //if (dontneed_out_length)
-                    //madvise(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length, MADV_DONTNEED);
+                if (dontneed_sorted_length)
+                    munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
+                if (dontneed_out_length)
+                    munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
                 free(bucket.addr);
 
                 const auto t_resource_end = ch::high_resolution_clock::now();
