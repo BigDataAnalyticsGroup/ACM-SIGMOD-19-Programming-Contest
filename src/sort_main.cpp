@@ -254,10 +254,6 @@ int main(int argc, const char **argv)
                       << "sort: " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
                       << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
-
-#ifdef SUBMISSION
-        std::this_thread::sleep_for(10s);
-#endif
     }
     else
     {
@@ -733,10 +729,6 @@ int main(int argc, const char **argv)
                       << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n"
                       << "d_unmap_total: " << ch::duration_cast<ch::milliseconds>(d_unmap_total).count() / 1e3 << " s\n";
         }
-
-#ifdef SUBMISSION
-        std::this_thread::sleep_for(20s);
-#endif
     }
 
     /* Release resources. */
