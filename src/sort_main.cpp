@@ -488,11 +488,7 @@ int main(int argc, const char **argv)
         const auto t_merge_begin = ch::high_resolution_clock::now();
 
         /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
-        std::cerr << "Merge the sorted " << num_records_to_sort << " records in memory with the buckets.\n";
-        auto p_out = reinterpret_cast<record*>(output);
-        auto p_sorted = reinterpret_cast<record*>(in_memory_buffer);
-        auto sorted_end = p_sorted + num_records_to_sort;
-        assert(std::is_sorted(p_sorted, sorted_end) and "in-memory data is not sorted");
+        std::cerr << "Merge the sorted records in memory with the buckets.\n";
 
 #ifdef WITH_PCM
         auto pcm_err = the_PCM.program();
@@ -550,6 +546,8 @@ int main(int argc, const char **argv)
                     bucket.loader = std::thread([&bucket, &d_load_bucket_total]() {
                         const auto t_load_bucket_begin = ch::high_resolution_clock::now();
                         bucket.addr = malloc(bucket.size);
+                        if (not bucket.addr)
+                            err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
                         read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
                         const auto t_load_bucket_end = ch::high_resolution_clock::now();
                         d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
@@ -561,6 +559,7 @@ int main(int argc, const char **argv)
                 auto &bucket = buckets[i - 1];
                 if (bucket.size) {
                     const auto t_wait_for_load_bucket_before = ch::high_resolution_clock::now();
+                    assert(bucket.loader.joinable());
                     bucket.loader.join();
                     const auto t_wait_for_load_bucket_after = ch::high_resolution_clock::now();
                     d_wait_for_load_bucket_total += t_wait_for_load_bucket_after - t_wait_for_load_bucket_before;
@@ -577,91 +576,98 @@ int main(int argc, const char **argv)
             }
 
             if (i >= 2) {
-                const auto bucket_id = i - 2;
-                assert(bucket_id < NUM_BUCKETS);
-                auto &bucket = buckets[bucket_id];
+                auto &bucket = buckets[i - 2];
 
+                const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
+                const std::size_t num_records_in_memory = in_memory_histogram[bucket.id];
+                const std::size_t num_records_merge_total = num_records_in_bucket + num_records_in_memory;
+
+                const auto p_sorted_begin = in_memory_buckets[bucket.id];
+                auto p_sorted = p_sorted_begin;
+                const auto p_sorted_end = p_sorted + num_records_in_memory;
+                assert(std::is_sorted(p_sorted_begin, p_sorted_end));
+
+                const auto p_out_begin = reinterpret_cast<record*>(output) +
+                             (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
+                             running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
+                auto p_out = p_out_begin;
+                const auto p_out_end = p_out + num_records_merge_total;
+
+                /* Wait for the sort to finish. */
                 if (bucket.size) {
-                    const auto t_wait_for_sort = ch::high_resolution_clock::now();
+                    const auto t_wait_for_sort_before = ch::high_resolution_clock::now();
+                    assert(bucket.sorter.joinable());
                     bucket.sorter.join(); // wait for the sorter thread to finish sorting the bucket
-                    const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
-                    d_waiting_for_sort_total += t_merge_bucket_begin - t_wait_for_sort;
+                    const auto t_wait_for_sort_after = ch::high_resolution_clock::now();
+                    d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
+                }
 
-                    const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
-                    const auto bucket_begin = reinterpret_cast<record*>(bucket.addr);
-                    const auto bucket_end = bucket_begin + num_records_in_bucket;
-                    assert(std::is_sorted(bucket_begin, bucket_end));
-
-                    auto p_bucket = bucket_begin;
-                    const auto p_sorted_old = p_sorted;
-                    const auto p_out_old = p_out;
+                const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
+                if (bucket.size) {
+                    const auto p_bucket_begin = reinterpret_cast<record*>(bucket.addr);
+                    auto p_bucket = p_bucket_begin;
+                    const auto p_bucket_end = p_bucket + num_records_in_bucket;
+                    assert(std::is_sorted(p_bucket_begin, p_bucket_end));
 
                     /* If the in-memory data is not yet finished, merge. */
-                    if (p_sorted != sorted_end) {
-                        /* Merge this bucket with the sorted data. */
-                        while (p_bucket != bucket_end and p_sorted != sorted_end) {
-                            //IACA_START;
-                            assert(p_bucket <= bucket_end);
-                            assert(p_sorted <= sorted_end);
-                            assert(p_out < reinterpret_cast<record*>(output) + num_records);
+                    assert(p_sorted != p_sorted_end and p_bucket != p_bucket_end);
 
-                            const ptrdiff_t less = *p_bucket < *p_sorted;
-                            *p_out++ = less ? *p_bucket : *p_sorted;
-                            p_bucket += less;
-                            p_sorted += ptrdiff_t(1) - less;
-                        }
-                        //IACA_END;
-                        assert(p_out - p_out_old == (p_sorted - p_sorted_old) + (p_bucket - bucket_begin) and
-                                "incorrect number of elements written to output");
-                        assert(std::is_sorted(p_out_old, p_out) and "output not sorted");
-                        assert ((p_bucket == bucket_end) != (p_sorted == sorted_end) and
-                                "either the bucket is finished and sorted in-memory data remains or vice versa");
-                    } else {
-#ifndef NDEBUG
-                        std::cerr << "  In-memory sorted data is already merged.  Flush bucket to output.\n";
-#endif
+                    /* Merge this bucket with the sorted data. */
+                    while (p_bucket != p_bucket_end and p_sorted != p_sorted_end) {
+                        //IACA_START;
+                        assert(p_bucket <= p_bucket_end);
+                        assert(p_sorted <= p_sorted_end);
+                        assert(p_out < reinterpret_cast<record*>(output) + num_records);
+
+                        const ptrdiff_t less = *p_bucket < *p_sorted;
+                        *p_out++ = less ? *p_bucket : *p_sorted;
+                        p_bucket += less;
+                        p_sorted += ptrdiff_t(1) - less;
                     }
+                    //IACA_END;
+                    assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
+                    assert(((p_bucket == p_bucket_end) or (p_sorted == p_sorted_end)) and
+                            "at least one of the two inputs must be finished");
 
-                    /* Finish the bucket. */
-                    while (p_bucket != bucket_end)
+                    /* Finish the one unfinished input. */
+                    while (p_bucket != p_bucket_end)
                         *p_out++ = *p_bucket++;
-
-                    assert(p_out - p_out_old == (p_sorted - p_sorted_old) + (p_bucket - bucket_begin) and
-                            "incorrect number of elements written to output");
-                    assert(std::is_sorted(p_out_old, p_out) and "output not sorted");
-
-                    const auto t_merge_bucket_end = ch::high_resolution_clock::now();
-                    d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
-
-                    /* Release resources. */
-                    const uintptr_t unmap_sorted_begin = reinterpret_cast<uintptr_t>(p_sorted_old) & ~(uintptr_t(PAGESIZE) - 1);
-                    const uintptr_t unmap_sorted_end = reinterpret_cast<uintptr_t>(p_sorted) & ~(uintptr_t(PAGESIZE) - 1);
-                    const ptrdiff_t unmap_sorted_length = unmap_sorted_end - unmap_sorted_begin;
-                    const uintptr_t unmap_out_begin = reinterpret_cast<uintptr_t>(p_out_old) & ~(uintptr_t(PAGESIZE) - 1);
-                    const uintptr_t unmap_out_end = reinterpret_cast<uintptr_t>(p_out) & ~(uintptr_t(PAGESIZE) - 1);
-                    const ptrdiff_t unmap_out_length = unmap_out_end - unmap_out_begin;
-
-                    if (unmap_sorted_length) {
-                        if (munmap(reinterpret_cast<void*>(unmap_sorted_begin), unmap_sorted_length))
-                            err(EXIT_FAILURE, "Failed to unmap the merged part of the in-memory sorted data");
-                    }
-                    if (unmap_out_length) {
-                        if (munmap(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length))
-                            err(EXIT_FAILURE, "Failed to unmap the solved part of the mmap'd output file");
-                    }
-                    free(bucket.addr);
-
-                    const auto t_resource_end = ch::high_resolution_clock::now();
-                    d_unmap_total += t_resource_end - t_merge_bucket_end;
+                    while (p_sorted != p_sorted_end)
+                        *p_out++ = *p_sorted++;
+                    assert(p_bucket == p_bucket_end and "consumed incorrect number of records from bucket file");
+                } else {
+                    while (p_sorted != p_sorted_end)
+                        *p_out++ = *p_sorted++;
                 }
+                assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
+                assert(p_out == p_out_end and "incorrect number of elements written to output");
+                assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
+
+                const auto t_merge_bucket_end = ch::high_resolution_clock::now();
+                d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
+
+                /* Release resources. */
+                constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
+                const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
+                const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
+                const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
+                const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
+
+                //if (dontneed_sorted_length)
+                    //madvise(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length, MADV_DONTNEED);
+                //if (dontneed_out_length)
+                    //madvise(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length, MADV_DONTNEED);
+                free(bucket.addr);
+
+                const auto t_resource_end = ch::high_resolution_clock::now();
+                d_unmap_total += t_resource_end - t_merge_bucket_end;
                 if (fclose(bucket.file))
                     warn("Failed to close bucket file");
                 free(bucket.buffer);
             }
         }
-        /* Finish the sorted in-memory data. */
-        while (p_sorted != sorted_end)
-            *p_out++ = *p_sorted++;
 
 #ifdef WITH_PCM
         the_PCM.getAllCounterStates(pcm_after.system, pcm_after.sockets, pcm_after.cores);
