@@ -532,18 +532,10 @@ int main(int argc, const char **argv)
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    bucket.loader = std::thread([&bucket, fd, bucket_id, &d_load_bucket_total]() {
+                    bucket.loader = std::thread([&bucket, fd, &d_load_bucket_total]() {
                         const auto t_load_bucket_begin = ch::high_resolution_clock::now();
-                        bucket.addr = mmap(nullptr, bucket.size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
-                        if (bucket.addr == MAP_FAILED)
-                            err(EXIT_FAILURE, "Failed to mmap bucket %lu file", bucket_id);
-                        if (madvise(bucket.addr, bucket.size, MADV_WILLNEED))
-                            warn("Failed to advise access to the bucket file");
-                        //std::thread([&bucket]() {
-                            //auto p = reinterpret_cast<uint8_t*>(bucket.addr);
-                            //for (auto end = p + bucket.size; p < end; p += PAGESIZE)
-                                //dead_code += *p; //__builtin_prefetch(p);
-                        //}).detach();
+                        bucket.addr = malloc(bucket.size);
+                        read_concurrent(fd, bucket.addr, bucket.size, 0);
                         const auto t_load_bucket_end = ch::high_resolution_clock::now();
                         d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                     });
@@ -649,8 +641,9 @@ int main(int argc, const char **argv)
                         if (munmap(reinterpret_cast<void*>(unmap_out_begin), unmap_out_length))
                             err(EXIT_FAILURE, "Failed to unmap the solved part of the mmap'd output file");
                     }
-                    if (munmap(bucket.addr, bucket.size))
-                        err(EXIT_FAILURE, "Failed to unmap the bucket");
+                    //if (munmap(bucket.addr, bucket.size))
+                        //err(EXIT_FAILURE, "Failed to unmap the bucket");
+                    free(bucket.addr);
 
                     const auto t_resource_end = ch::high_resolution_clock::now();
                     d_unmap_total += t_resource_end - t_merge_bucket_end;
