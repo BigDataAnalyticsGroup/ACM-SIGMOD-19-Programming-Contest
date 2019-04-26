@@ -28,6 +28,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 
@@ -56,7 +57,9 @@ inline uint32_t swap_little_big_endian(uint32_t v)
 
 struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
 {
-    friend bool operator<(const key_type &first, const key_type &second) {
+    private:
+    template<class Compare>
+    static bool compare(const key_type &first, const key_type &second, const Compare &cmp) {
         {
             const uint32_t *p_first = reinterpret_cast<const uint32_t*>(first.data());
             const uint32_t *p_second = reinterpret_cast<const uint32_t*>(second.data());
@@ -64,23 +67,13 @@ struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
             {
                 const uint32_t v_first = swap_little_big_endian(p_first[0]);
                 const uint32_t v_second = swap_little_big_endian(p_second[0]);
-                if (v_first != v_second) return v_first < v_second;
+                if (v_first != v_second) return cmp(v_first, v_second);
             }
 
             {
                 const uint32_t v_first = swap_little_big_endian(p_first[1]);
                 const uint32_t v_second = swap_little_big_endian(p_second[1]);
-#if 0
-                std::cerr << "first is  " << first << ",\n"
-                          << "second is " << second << '\n'
-                          << "compare second 4 bytes:\n  "
-                          << std::hex << std::setfill('0') << std::setw(8) << v_first << " vs\n  "
-                          << std::hex << std::setfill('0') << std::setw(8) << v_second << " yields\n  ";
-                if (v_first < v_second) std::cerr << "first less than second\n";
-                else if (v_first > v_second) std::cerr << "first greater than second\n";
-                else std::cerr << "first equal to second, continue\n";
-#endif
-                if (v_first != v_second) return v_first < v_second;
+                if (v_first != v_second) return cmp(v_first, v_second);
             }
         }
 
@@ -90,28 +83,24 @@ struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
 
             const uint16_t v_first = swap_little_big_endian(*p_first);
             const uint16_t v_second = swap_little_big_endian(*p_second);
-            return v_first < v_second;
+            return cmp(v_first, v_second);
         }
     }
 
-    /** Returns a value smaller than zero, zero, or larger than zero if the other key compares less, equal, or greater
-     * then this key, respectively. */
-    int compare(const key_type &other) const {
-#if 0
-        auto t = reinterpret_cast<const uint8_t*>(this->data());
-        auto o = reinterpret_cast<const uint8_t*>(other.data());
-        auto end = t + size();
-
-        for (;;) {
-            if (t == end) return 0;
-            auto cmp = *t - *o;
-            if (cmp) return cmp;
-            ++t, ++o;
-        }
-#else
-        return memcmp(this->data(), other.data(), size());
-#endif
+    public:
+    friend bool operator<(const key_type &first, const key_type &second) {
+        return compare(first, second, std::less<uint32_t>{});
     }
+    friend bool operator>(const key_type &first, const key_type &second) {
+        return compare(first, second, std::greater<uint32_t>{});
+    }
+    friend bool operator<=(const key_type &first, const key_type &second) { return not (first > second); }
+    friend bool operator>=(const key_type &first, const key_type &second) { return not (first < second); }
+    friend bool operator!=(const key_type &first, const key_type &second) {
+        return compare(first, second, std::not_equal_to<uint32_t>{});
+    }
+    friend bool operator==(const key_type &first, const key_type &second) { return not (first != second); }
+
 
     void to_ascii(std::ostream &out) const { for (auto c : *this) out << char(c); }
 
@@ -143,8 +132,6 @@ struct __attribute__((packed)) record
     bool operator>=(const record &other) const { return this->key >= other.key; }
     bool operator==(const record &other) const { return this->key == other.key; }
     bool operator!=(const record &other) const { return this->key != other.key; }
-
-    int compare(const record &other) const { return key.compare(other.key); }
 
     void to_ascii(std::ostream &out) const { key.to_ascii(out); payload.to_ascii(out); }
 
