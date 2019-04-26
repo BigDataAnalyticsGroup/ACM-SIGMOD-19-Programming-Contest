@@ -593,12 +593,10 @@ int main(int argc, const char **argv)
                             assert(p_sorted <= sorted_end);
                             assert(p_out < reinterpret_cast<record*>(output) + num_records);
 
-#if 1
-                            const bool less = *p_bucket < *p_sorted;
-                            *p_out++ = less ? *p_bucket++ : *p_sorted++;
-#else
-                            *p_out++ = *p_bucket < *p_sorted ? *p_bucket++ : *p_sorted++;
-#endif
+                            const ptrdiff_t less = *p_bucket < *p_sorted;
+                            *p_out++ = less ? *p_bucket : *p_sorted;
+                            p_bucket += less;
+                            p_sorted += ptrdiff_t(1) - less;
                         }
                         //IACA_END;
                         assert(p_out - p_out_old == (p_sorted - p_sorted_old) + (p_bucket - bucket_begin) and
