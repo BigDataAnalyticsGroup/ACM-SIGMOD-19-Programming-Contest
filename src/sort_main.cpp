@@ -513,7 +513,7 @@ int main(int argc, const char **argv)
 
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
 #ifndef NDEBUG
-            std::cerr << "i = " << i << ":\n";
+            std::cerr << "i = " << i << "\n";
 #endif
 
             /* MMap and fetch the next bucket. */
@@ -654,10 +654,6 @@ int main(int argc, const char **argv)
 
                     const auto t_resource_end = ch::high_resolution_clock::now();
                     d_unmap_total += t_resource_end - t_merge_bucket_end;
-                } else {
-#ifndef NDEBUG
-                    std::cerr << "  Empty bucket.  Skip.\n";
-#endif
                 }
                 if (fclose(bucket.file))
                     warn("Failed to close bucket file");
