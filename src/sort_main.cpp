@@ -514,9 +514,9 @@ int main(int argc, const char **argv)
             d_unmap_total(0);
 
         /* Flush all buckets, get the size, and compute the running sum of sizes. */
-        std::array<unsigned, NUM_BUCKETS> running_sum;
+        std::array<std::size_t, NUM_BUCKETS> running_sum;
         {
-            unsigned sum = 0;
+            std::size_t sum = 0;
             for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
                 auto &bucket = buckets[bucket_id];
                 if (fflush(bucket.file))
