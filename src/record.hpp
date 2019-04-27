@@ -60,23 +60,18 @@ struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
     private:
     template<class Compare>
     static bool compare(const key_type &first, const key_type &second, const Compare &cmp) {
+        /* Compare first 8 bytes. */
         {
             const uint32_t *p_first = reinterpret_cast<const uint32_t*>(first.data());
             const uint32_t *p_second = reinterpret_cast<const uint32_t*>(second.data());
-
-            {
-                const uint32_t v_first = swap_little_big_endian(p_first[0]);
-                const uint32_t v_second = swap_little_big_endian(p_second[0]);
-                if (v_first != v_second) return cmp(v_first, v_second);
-            }
-
-            {
-                const uint32_t v_first = swap_little_big_endian(p_first[1]);
-                const uint32_t v_second = swap_little_big_endian(p_second[1]);
-                if (v_first != v_second) return cmp(v_first, v_second);
-            }
+            const uint64_t v_first = uint64_t(swap_little_big_endian(p_first[0])) << 32UL |
+                                     uint64_t(swap_little_big_endian(p_first[1]));
+            const uint64_t v_second = uint64_t(swap_little_big_endian(p_second[0])) << 32UL |
+                                     uint64_t(swap_little_big_endian(p_second[1]));
+            if (v_first != v_second) return cmp(v_first, v_second);
         }
 
+        /* Compare last 2 bytes. */
         {
             const uint16_t *p_first = reinterpret_cast<const uint16_t*>(first.data() + 8);
             const uint16_t *p_second = reinterpret_cast<const uint16_t*>(second.data() + 8);
@@ -89,16 +84,16 @@ struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
 
     public:
     friend bool operator<(const key_type &first, const key_type &second) {
-        return compare(first, second, std::less<uint32_t>{});
+        return compare(first, second, std::less<uint64_t>{});
     }
     friend bool operator>(const key_type &first, const key_type &second) {
-        return compare(first, second, std::greater<uint32_t>{});
+        return compare(first, second, std::greater<uint64_t>{});
+    }
+    friend bool operator!=(const key_type &first, const key_type &second) {
+        return compare(first, second, std::not_equal_to<uint64_t>{});
     }
     friend bool operator<=(const key_type &first, const key_type &second) { return not (first > second); }
     friend bool operator>=(const key_type &first, const key_type &second) { return not (first < second); }
-    friend bool operator!=(const key_type &first, const key_type &second) {
-        return compare(first, second, std::not_equal_to<uint32_t>{});
-    }
     friend bool operator==(const key_type &first, const key_type &second) { return not (first != second); }
 
 
