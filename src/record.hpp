@@ -60,26 +60,24 @@ struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
     private:
     template<class Compare>
     static bool compare(const key_type &first, const key_type &second, const Compare &cmp) {
-        /* Compare first 8 bytes. */
-        {
-            const uint32_t *p_first = reinterpret_cast<const uint32_t*>(first.data());
-            const uint32_t *p_second = reinterpret_cast<const uint32_t*>(second.data());
-            const uint64_t v_first = uint64_t(swap_little_big_endian(p_first[0])) << 32UL |
-                                     uint64_t(swap_little_big_endian(p_first[1]));
-            const uint64_t v_second = uint64_t(swap_little_big_endian(p_second[0])) << 32UL |
-                                     uint64_t(swap_little_big_endian(p_second[1]));
-            if (v_first != v_second) return cmp(v_first, v_second);
-        }
+        /* Load first 8 bytes. */
+        const uint32_t *p_first = reinterpret_cast<const uint32_t*>(first.data());
+        const uint32_t *p_second = reinterpret_cast<const uint32_t*>(second.data());
+        const uint64_t v0_first = uint64_t(swap_little_big_endian(p_first[0])) << 32UL |
+                                 uint64_t(swap_little_big_endian(p_first[1]));
+        const uint64_t v0_second = uint64_t(swap_little_big_endian(p_second[0])) << 32UL |
+                                 uint64_t(swap_little_big_endian(p_second[1]));
 
-        /* Compare last 2 bytes. */
-        {
-            const uint16_t *p_first = reinterpret_cast<const uint16_t*>(first.data() + 8);
-            const uint16_t *p_second = reinterpret_cast<const uint16_t*>(second.data() + 8);
+        /* Load last 2 bytes. */
+        const uint16_t v1_first = swap_little_big_endian(*reinterpret_cast<const uint16_t*>(first.data() + 8));
+        const uint16_t v1_second = swap_little_big_endian(*reinterpret_cast<const uint16_t*>(second.data() + 8));
 
-            const uint16_t v_first = swap_little_big_endian(*p_first);
-            const uint16_t v_second = swap_little_big_endian(*p_second);
-            return cmp(v_first, v_second);
-        }
+        /* Compare. */
+        const bool take0 = v0_first != v0_second;
+        const bool cmp0 = cmp(v0_first, v0_second);
+        const bool cmp1 = cmp(v1_first, v1_second);
+
+        return (take0 and cmp0) or (not take0 and cmp1);
     }
 
     public:
