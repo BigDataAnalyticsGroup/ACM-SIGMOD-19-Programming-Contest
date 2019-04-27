@@ -53,6 +53,14 @@
 #include "cpucounters.h"
 #endif
 
+//#define WITH_IACA
+#ifdef WITH_IACA
+#include <iacaMarks.h>
+#else
+#define IACA_START
+#define IACA_END
+#endif
+
 
 namespace ch = std::chrono;
 using namespace std::chrono_literals;
@@ -615,7 +623,7 @@ int main(int argc, const char **argv)
 
                     /* Merge this bucket with the sorted data. */
                     while (p_bucket != p_bucket_end and p_sorted != p_sorted_end) {
-                        //IACA_START;
+                        IACA_START;
                         assert(p_bucket <= p_bucket_end);
                         assert(p_sorted <= p_sorted_end);
                         assert(p_out < reinterpret_cast<record*>(output) + num_records);
@@ -625,7 +633,7 @@ int main(int argc, const char **argv)
                         p_bucket += less;
                         p_sorted += ptrdiff_t(1) - less;
                     }
-                    //IACA_END;
+                    IACA_END;
                     assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
                     assert(((p_bucket == p_bucket_end) or (p_sorted == p_sorted_end)) and
                             "at least one of the two inputs must be finished");
