@@ -64,29 +64,16 @@ void american_flag_sort_partitioning(const unsigned digit,
                                      const histogram_t<unsigned, NUM_BUCKETS> &histogram,
                                      const std::array<record*, NUM_BUCKETS> &buckets);
 
+void american_flag_sort_partitioning_parallel(const histogram_t<unsigned, NUM_BUCKETS> &histogram,
+                                              const std::array<record*, NUM_BUCKETS> &buckets,
+                                              const unsigned digit,
+                                              const unsigned num_threads);
+
 /** Implements American Flag Sort of records.  Processes the key byte-wise. */
 void american_flag_sort(record *first, record *last, const unsigned digit = 0);
 
-/** Implements American Flag Sort of records.  Processes the key byte-wise.  Performs multi-threading on first
- * recursion. */
-void american_flag_sort_MT(record * const first, record * const last,
-                           const unsigned num_threads, const unsigned digit = 0);
-
 /** Like american_flag_sort_MT, but exploits parallelism from the very beginning. */
 void american_flag_sort_parallel(record * const first, record * const last, const unsigned digit);
-
-/** Implements Selection Sort.  Finds the smallest item in the remaining unsorted sequence, moves it to the front, and
- * continues at the next item.  */
-void selection_sort(record *first, record *last);
-
-/** Implements Insertion Sort. */
-void insertion_sort(record *first, record *last);
-
-/** Performs a simple American Flag Sort and falls back to std::sort for small ranges. */
-void my_hybrid_sort(record *first, record *last);
-
-/** Performs a simple American Flag Sort and falls back to std::sort for small ranges. */
-void my_hybrid_sort_MT(record *first, record *last);
 
 /** Selects an appropriate sorting algorithm based on the size of the input. */
 void select_sort_algorithm(record *first, record *last, const unsigned digit, const unsigned num_threads = 1);
