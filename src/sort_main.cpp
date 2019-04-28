@@ -222,20 +222,10 @@ int main(int argc, const char **argv)
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
         /* Sort the records. */
-        {
-            record *records = reinterpret_cast<record*>(output);
-
-#ifndef NDEBUG
-            if (num_records <= 20) {
-                for (auto p = records, end = records + num_records; p != end; ++p)
-                    p->to_ascii(std::cerr);
-            }
-#endif
-
-            std::cerr << "Sort the data.\n";
-            american_flag_sort_parallel(records, records + num_records, 0);
-            assert(std::is_sorted(records, records + num_records));
-        }
+        record *records = reinterpret_cast<record*>(output);
+        std::cerr << "Sort the data.\n";
+        american_flag_sort_parallel(records, records + num_records, 0);
+        assert(std::is_sorted(records, records + num_records));
 
         const auto t_begin_write = ch::high_resolution_clock::now();
 
