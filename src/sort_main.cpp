@@ -601,6 +601,8 @@ int main(int argc, const char **argv)
                     d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
                 }
 
+                madvise(p_out_begin, num_records_merge_total * sizeof(record), MADV_SEQUENTIAL);
+
                 const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
                 if (bucket.size) {
                     const auto p_bucket_begin = reinterpret_cast<record*>(bucket.addr);
