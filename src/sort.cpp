@@ -47,6 +47,8 @@
 #endif
 
 
+constexpr std::size_t THRESHOLD_STD_SORT_MAX = 50;
+
 #ifdef SUBMISSION
 constexpr unsigned NUM_SOCKETS = 2;
 constexpr unsigned NUM_HW_CORES_PER_SOCKET = 10;
@@ -358,8 +360,8 @@ void select_sort_algorithm(record *first, record *last, const unsigned digit, co
 {
     (void) num_threads; // TODO
     const std::size_t num_records = last - first;
-    if (num_records > 50)
-        american_flag_sort(first, last, digit);
-    else
+    if (num_records <= THRESHOLD_STD_SORT_MAX)
         std::sort(first, last);
+    else
+        american_flag_sort(first, last, digit);
 }
