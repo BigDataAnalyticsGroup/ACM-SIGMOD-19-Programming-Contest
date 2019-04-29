@@ -25,6 +25,7 @@
 
 #include "sort.hpp"
 
+#include "hwtop.hpp"
 #include "utility.hpp"
 #include <algorithm>
 #include <array>
@@ -50,29 +51,6 @@
 constexpr std::size_t THRESHOLD_STD_SORT_MAX = 50;
 
 #ifdef SUBMISSION
-constexpr unsigned NUM_SOCKETS = 2;
-constexpr unsigned NUM_HW_CORES_PER_SOCKET = 10;
-constexpr unsigned NUM_THREADS_PER_HW_CORE = 2;
-constexpr unsigned NUM_LOGICAL_CORES_PER_SOCKET = NUM_HW_CORES_PER_SOCKET * NUM_THREADS_PER_HW_CORE;
-constexpr unsigned NUM_LOGICAL_CORES_TOTAL = NUM_LOGICAL_CORES_PER_SOCKET * NUM_SOCKETS;
-
-constexpr std::initializer_list<unsigned> ALL_CPUS = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-    20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-    30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
-};
-
-constexpr std::initializer_list<unsigned> SOCKET0_CPUS = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-    20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-};
-
-constexpr std::initializer_list<unsigned> SOCKET1_CPUS = {
-    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-    30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
-};
-
 constexpr unsigned NUM_THREADS_HISTOGRAM = NUM_LOGICAL_CORES_TOTAL;
 constexpr unsigned NUM_THREADS_PARTITIONING = NUM_LOGICAL_CORES_PER_SOCKET;
 constexpr unsigned NUM_THREADS_RECURSION = NUM_LOGICAL_CORES_TOTAL;

@@ -27,6 +27,7 @@
 #warning "Compiling submission build"
 #endif
 
+#include "hwtop.hpp"
 #include "mmap.hpp"
 #include "record.hpp"
 #include "sort.hpp"
@@ -69,8 +70,8 @@ using namespace std::chrono_literals;
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
-constexpr unsigned NUM_THREADS_READ = 20;
-constexpr unsigned NUM_THREADS_PARTITION = 10;
+constexpr unsigned NUM_THREADS_READ = NUM_LOGICAL_CORES_TOTAL;
+constexpr unsigned NUM_THREADS_PARTITION = NUM_LOGICAL_CORES_PER_SOCKET;
 constexpr const char * const OUTPUT_PATH = "/output-disk";
 constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 28UL * 1024 * 1024 * 1024; // 26 GiB
 #else
@@ -78,9 +79,9 @@ constexpr unsigned NUM_THREADS_READ = 4;
 constexpr unsigned NUM_THREADS_PARTITION = 6;
 constexpr const char * const OUTPUT_PATH = "./buckets";
 #ifndef NDEBUG
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 1UL * 1024 * 1024 * 1024; // 2 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 1UL * 1024 * 1024 * 1024; // 1 GiB
 #else
-constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 2UL * 1024 * 1024 * 1024; // 2 GiB
+constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 4UL * 1024 * 1024 * 1024; // 4 GiB
 #endif
 #endif
 
@@ -312,15 +313,15 @@ int main(int argc, const char **argv)
         bind_to_cpus(SOCKET0_CPUS);
 #endif
         {
-            std::array<std::thread, NUM_THREADS_READ> threads;
-            const std::size_t count_per_thread = num_records / NUM_THREADS_READ;
+            std::array<std::thread, NUM_THREADS_PARTITION> threads;
+            const std::size_t count_per_thread = num_records / NUM_THREADS_PARTITION;
             std::size_t offset = 0;
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
-                const std::size_t count = tid == NUM_THREADS_READ - 1 ? num_records - offset : count_per_thread;
+            for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid) {
+                const std::size_t count = tid == NUM_THREADS_PARTITION - 1 ? num_records - offset : count_per_thread;
                 threads[tid] = std::thread(partition, offset * sizeof(record), count);
                 offset += count;
             }
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+            for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid)
                 threads[tid].join();
         }
 
