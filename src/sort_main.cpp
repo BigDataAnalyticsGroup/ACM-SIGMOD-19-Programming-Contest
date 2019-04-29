@@ -199,10 +199,11 @@ int main(int argc, const char **argv)
         err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
     std::cerr << "Memory map the output file at virtual address " << output << ".\n";
 
-    /* Choose the algorithm based on the file size. */
+    /*----- Choose the algorithm based on the file size. -------------------------------------------------------------*/
     if (size_in_bytes <= IN_MEMORY_BUFFER_SIZE)
     {
-        std::cerr << "In-Memory Sorting\n";
+        /*----- IN-MEMORY SORTING ------------------------------------------------------------------------------------*/
+        std::cerr << "===== In-Memory Sorting =====\n";
 
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read and partition data into main memory.\n";
@@ -411,7 +412,8 @@ int main(int argc, const char **argv)
     }
     else
     {
-        std::cerr << "External Sorting\n";
+        /*----- EXTERNAL SORTING -------------------------------------------------------------------------------------*/
+        std::cerr << "===== External Sorting =====\n";
 
         /* Idea:
          * Read the first 30+x GB of data, partition on the fly and write to buckets on disk, where each bucket is a
@@ -655,7 +657,6 @@ int main(int argc, const char **argv)
 
         ch::high_resolution_clock::duration
             d_load_bucket_total(0),
-            d_wait_for_load_bucket_total(0),
             d_sort_total(0),
             d_waiting_for_sort_total(0),
             d_merge_total(0),
@@ -685,11 +686,10 @@ int main(int argc, const char **argv)
             return first.size < second.size;
         });
 
+        /* Process all buckets, in ascending order by their size.  Each bucket goes through the pipeline of three
+         * stages: read - sort - merge. */
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
-#ifndef NDEBUG
-            std::cerr << "i = " << i << "\n";
-#endif
-            /* Sort bucket. */
+            /* Start sorter of bucket i-1. */
             if (i >= 1 and i <= NUM_BUCKETS) {
                 auto &bucket = buckets[i - 1];
                 if (bucket.size) {
@@ -704,7 +704,7 @@ int main(int argc, const char **argv)
                 }
             }
 
-            /* Merge bucket. */
+            /* Merge bucket i. */
             if (i >= 2) {
                 auto &bucket = buckets[i - 2];
 
@@ -803,22 +803,21 @@ int main(int argc, const char **argv)
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
             }
 
-            /* Load bucket. */
+            /* Load bucket i-2. */
             if (i < NUM_BUCKETS) {
                 auto &bucket = buckets[i];
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
                     bucket.addr = malloc(bucket.size);
                     if (not bucket.addr)
                         err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
+                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
                     read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
                     const auto t_load_bucket_end = ch::high_resolution_clock::now();
                     d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                 }
             }
-
         }
 
 #ifdef WITH_PCM
@@ -828,8 +827,8 @@ int main(int argc, const char **argv)
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
-        if (munmap(in_memory_buffer, num_bytes_to_sort))
-            err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
+        //if (munmap(in_memory_buffer, num_bytes_to_sort))
+            //err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
 
 #ifdef WITH_PCM
         /* Evaluate PCM. */
@@ -874,7 +873,6 @@ int main(int argc, const char **argv)
                       << "total:     " << d_total_s << " s\n";
 
             std::cerr << "d_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_load_bucket_total).count() / 1e3 << " s\n"
-                      << "d_wait_for_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_wait_for_load_bucket_total).count() / 1e3 << " s\n"
                       << "d_sort_total: " << ch::duration_cast<ch::milliseconds>(d_sort_total).count() / 1e3 << " s\n"
                       << "d_waiting_for_sort_total: " << ch::duration_cast<ch::milliseconds>(d_waiting_for_sort_total).count() / 1e3 << " s\n"
                       << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n"
