@@ -65,9 +65,6 @@
 namespace ch = std::chrono;
 using namespace std::chrono_literals;
 
-constexpr std::size_t FILE_SIZE_SMALL   = 00UL * 1000 * 1000 * 1000; // 10 GB
-constexpr std::size_t FILE_SIZE_MEDIUM  = 20UL * 1000 * 1000 * 1000; // 20 GB
-//constexpr std::size_t FILE_SIZE_MEDIUM  = 00UL * 1000 * 1000 * 1000; // 20 GB
 constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 
 #ifdef SUBMISSION
@@ -201,17 +198,9 @@ int main(int argc, const char **argv)
     std::cerr << "Memory map the output file at virtual address " << output << ".\n";
 
     /* Choose the algorithm based on the file size. */
-    if (size_in_bytes <= FILE_SIZE_SMALL)
+    if (size_in_bytes <= IN_MEMORY_BUFFER_SIZE)
     {
-        /*----- SMALL DATA SET ---------------------------------------------------------------------------------------*/
-        std::cerr << "Detected SMALL data set\n";
-        std::cerr << "Not yet supported.\n";
-        std::exit(EXIT_FAILURE);
-    }
-    else if (size_in_bytes <= FILE_SIZE_MEDIUM)
-    {
-        /*----- MEDIUM DATA SET --------------------------------------------------------------------------------------*/
-        std::cerr << "Detected MEDIUM data set\n";
+        std::cerr << "In-Memory Sorting\n";
 
         const auto t_begin_read = ch::high_resolution_clock::now();
 
@@ -255,8 +244,7 @@ int main(int argc, const char **argv)
     }
     else
     {
-        /*----- LARGE DATA SET ---------------------------------------------------------------------------------------*/
-        std::cerr << "LARGE data set\n";
+        std::cerr << "External Sorting\n";
 
         /* Idea:
          * Read the first 30+x GB of data, partition on the fly and write to buckets on disk, where each bucket is a
