@@ -751,13 +751,22 @@ int main(int argc, const char **argv)
                 assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
                 assert(p_out == p_out_end and "incorrect number of elements written to output");
                 assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
-
                 const auto t_merge_bucket_end = ch::high_resolution_clock::now();
                 d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
 
                 /* Release resources. */
+                constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
+                {
+                    static std::size_t num_records_synced = 0;
+                    if (num_records_synced < num_records_to_partition) {
+                        const uintptr_t msync_begin = reinterpret_cast<uintptr_t>(p_out_begin) & ~PAGEMASK; // round down to bage boundary
+                        const uintptr_t msync_end = (reinterpret_cast<uintptr_t>(p_out_end) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                        msync(reinterpret_cast<void*>(msync_begin), msync_end - msync_begin, MS_SYNC);
+                        num_records_synced += num_records_merge;
+                    }
+                }
+
                 std::thread([=, &bucket]() {
-                    constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
                     const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
