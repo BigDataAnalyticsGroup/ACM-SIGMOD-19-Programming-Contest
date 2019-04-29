@@ -51,10 +51,6 @@
 #include <thread>
 #include <unistd.h>
 
-#ifdef WITH_PCM
-#include "cpucounters.h"
-#endif
-
 //#define WITH_IACA
 #ifdef WITH_IACA
 #include <iacaMarks.h>
@@ -153,10 +149,6 @@ int main(int argc, const char **argv)
         std::cerr << "USAGE:\n\t" << argv[0] << " <INPUT-FILE> <OUTPUT-FILE>" << std::endl;
         std::exit(EXIT_FAILURE);
     }
-
-#ifdef WITH_PCM
-    PCM &the_PCM = *PCM::getInstance(); // initialize singleton
-#endif
 
 #ifdef SUBMISSION
     /* Disable synchronization with C stdio. */
@@ -640,21 +632,6 @@ int main(int argc, const char **argv)
         /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
         std::cerr << "Merge the sorted records in memory with the buckets.\n";
 
-#ifdef WITH_PCM
-        auto pcm_err = the_PCM.program();
-        if (pcm_err != PCM::Success)
-            errx(EXIT_FAILURE, "Failed to program PCM");
-
-        struct AllCounterState
-        {
-            SystemCounterState system;
-            std::vector<SocketCounterState> sockets;
-            std::vector<CoreCounterState> cores;
-        } pcm_before, pcm_after;
-
-        the_PCM.getAllCounterStates(pcm_before.system, pcm_before.sockets, pcm_before.cores);
-#endif
-
         ch::high_resolution_clock::duration
             d_load_bucket_total(0),
             d_sort_total(0),
@@ -820,36 +797,11 @@ int main(int argc, const char **argv)
             }
         }
 
-#ifdef WITH_PCM
-        the_PCM.getAllCounterStates(pcm_after.system, pcm_after.sockets, pcm_after.cores);
-#endif
-
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
         //if (munmap(in_memory_buffer, num_bytes_to_sort))
             //err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
-
-#ifdef WITH_PCM
-        /* Evaluate PCM. */
-        const double avg_freq = getActiveAverageFrequency(pcm_before.system, pcm_after.system);
-        const double core_IPC = getCoreIPC(pcm_before.system, pcm_after.system);
-        const double total_exec_usage = getTotalExecUsage(pcm_before.system, pcm_after.system);
-        const double L3_hit_ratio = getL3CacheHitRatio(pcm_before.system, pcm_after.system);
-        const double cycles_lost_l3_misses = getCyclesLostDueL3CacheMisses(pcm_before.system, pcm_after.system);
-        const auto bytes_read = getBytesReadFromMC(pcm_before.system, pcm_after.system);
-        const auto bytes_written = getBytesWrittenToMC(pcm_before.system, pcm_after.system);
-
-        std::cerr << "Performance Counters for the Merge Phase:"
-                  << "\n  average core frequency: " << (avg_freq / 1e9) << " GHz"
-                  << "\n  average number of retired instructions per core cycle: " << core_IPC
-                  << "\n  average number of retired instructions per time intervall: " << total_exec_usage
-                  << "\n  L3 cache hit ratio: " << L3_hit_ratio * 100 << "%"
-                  << "\n  estimated core cycles lost due to L3 cache misses: " << cycles_lost_l3_misses * 100 << "%"
-                  << "\n  bytes read from DRAM memory controllers: " << double(bytes_read) / (1024 * 1024) << " MiB"
-                  << "\n  bytes written to DRAM memory controllers: " << double(bytes_written) / (1024 * 1024) << " MiB"
-                  << std::endl;
-#endif
 
         /* Report times and throughput. */
         {
