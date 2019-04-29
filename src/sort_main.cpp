@@ -30,6 +30,7 @@
 #include "mmap.hpp"
 #include "record.hpp"
 #include "sort.hpp"
+#include "utility.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -203,25 +204,190 @@ int main(int argc, const char **argv)
         std::cerr << "In-Memory Sorting\n";
 
         const auto t_begin_read = ch::high_resolution_clock::now();
+        std::cerr << "Read and partition data into main memory.\n";
 
-        /* Spawn threads to concurrently read file. */
-        std::cerr << "Read data into main memory.\n";
-        read_concurrent(fd_in, output, size_in_bytes, 0);
+        /* Create buckets. */
+        struct bucket_t {
+            std::size_t id; ///< the original id of the bucket; in [0, 255]
+            std::atomic_size_t count{0}; ///< the number of records in the bucket
+            std::size_t offset; ///< offset in number of records
+            void *addr = nullptr; ///< the address of the memory region of the loaded bucket
+        };
+        std::array<bucket_t, NUM_BUCKETS> buckets;
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            /* Assign custom, large buffer to file stream. */
+            buckets[bucket_id].id = bucket_id;
+            buckets[bucket_id].addr = malloc(size_in_bytes); // overprovision memory for the bucket
+        }
+
+        auto partition = [fd_in, argv, &buckets] (std::size_t offset, std::size_t count) {
+            constexpr std::size_t NUM_RECORDS_READ = 10000;
+            constexpr std::size_t NUM_RECORDS_PER_BUFFER = 1024;
+
+            std::ostringstream oss;
+
+            auto read_buffer = new record[NUM_RECORDS_READ]; ///< buffer to read into from input file
+            using buffer_t = std::array<record, NUM_RECORDS_PER_BUFFER>;
+            auto buffers = new buffer_t[NUM_BUCKETS]; ///< write-back buffer for each bucket file
+            std::array<record*, NUM_BUCKETS> heads; ///< next empty slot in each write-back buffer
+
+            for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
+                heads[bucket_id] = buffers[bucket_id].data();
+
+            /* Read as many records at once as fit into our buffer. */
+            while (count >= NUM_RECORDS_READ) {
+                const auto bytes_read = pread(fd_in, read_buffer, NUM_RECORDS_READ * sizeof(record), offset);
+                if (bytes_read != NUM_RECORDS_READ * sizeof(record)) {
+                    warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
+                    return;
+                }
+                offset += bytes_read;
+                count -= NUM_RECORDS_READ;
+
+                /* Partition all records from the read buffer into the write-back buffers. */
+                for (auto r = read_buffer, end = read_buffer + NUM_RECORDS_READ; r != end; ++r) {
+                    const unsigned bucket_id = r->key[0]; // get bucket id
+                    *heads[bucket_id]++ = *r; // append to write-back buffer
+                    /* If the write-back buffer is full, write it out and reset head. */
+                    if (heads[bucket_id] == &buffers[bucket_id][NUM_RECORDS_PER_BUFFER]) {
+                        heads[bucket_id] = buffers[bucket_id].data(); // reset head
+                        auto &dst_bucket = buckets[bucket_id]; // get the destination bucket
+                        const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
+                        auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
+                        memcpy(dst,
+                               heads[bucket_id],
+                               NUM_RECORDS_PER_BUFFER * sizeof(record));
+                    }
+                }
+            }
+            assert(count < NUM_RECORDS_READ);
+
+            /* Read remaining records at the end. */
+            if (count) {
+                const auto bytes_read = pread(fd_in, read_buffer, count * sizeof(record), offset);
+                if (bytes_read != int(count * sizeof(record))) {
+                    warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
+                    return;
+                }
+
+                for (auto r = read_buffer, end = read_buffer + count; r != end; ++r) {
+                    const unsigned bucket_id = r->key[0];
+                    *heads[bucket_id]++ = *r;
+                    if (heads[bucket_id] == &buffers[bucket_id][NUM_RECORDS_PER_BUFFER]) {
+                        for (auto p = buffers[bucket_id].data(); p != heads[bucket_id]; ++p)
+                            assert(p->key[0] == bucket_id);
+                        heads[bucket_id] = buffers[bucket_id].data(); // reset head
+                        auto &dst_bucket = buckets[bucket_id];
+                        const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
+                        auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
+                        memcpy(dst,
+                               heads[bucket_id],
+                               NUM_RECORDS_PER_BUFFER * sizeof(record));
+                    }
+                }
+            }
+
+            /* Write-back the records still in the buffer. */
+            for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+                buffer_t &buffer = buffers[bucket_id];
+                auto head = heads[bucket_id];
+                if (head != buffer.data()) {
+                    for (auto p = buffer.data(); p != head; ++p)
+                        assert(p->key[0] == bucket_id);
+                    auto &dst_bucket = buckets[bucket_id];
+                    auto num_records_in_buffer = head - buffer.data();
+                    const auto count = dst_bucket.count.fetch_add(num_records_in_buffer, std::memory_order_relaxed);
+                    auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
+                    memcpy(dst,
+                           buffers[bucket_id].data(),
+                           num_records_in_buffer * sizeof(record));
+                }
+            }
+
+            delete[] read_buffer;
+            delete[] buffers;
+        };
+
+#ifdef SUBMISSION
+        bind_to_cpus(SOCKET0_CPUS);
+#endif
+        {
+            std::array<std::thread, NUM_THREADS_READ> threads;
+            const std::size_t count_per_thread = num_records / NUM_THREADS_READ;
+            std::size_t offset = 0;
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
+                const std::size_t count = tid == NUM_THREADS_READ - 1 ? num_records - offset : count_per_thread;
+                threads[tid] = std::thread(partition, offset * sizeof(record), count);
+                offset += count;
+            }
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+                threads[tid].join();
+        }
+
+#ifndef NDEBUG
+        /* Validate buckets. */
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            const auto &bucket = buckets[bucket_id];
+            auto records = reinterpret_cast<record*>(bucket.addr);
+            const std::size_t num_records = bucket.count.load();
+            for (std::size_t i = 0; i != num_records; ++i)
+                assert(records[i].key[0] == bucket_id);
+        }
+#endif
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
-        /* Sort the records. */
-        record *records = reinterpret_cast<record*>(output);
-        std::cerr << "Sort the data.\n";
-        american_flag_sort_parallel(records, records + num_records, 0);
-        assert(std::is_sorted(records, records + num_records));
+        std::cerr << "Finish the buckets.\n";
+
+        /* Compute bucket offsets. */
+        for (std::size_t bucket_id = 0, sum = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            auto &bucket = buckets[bucket_id];
+            bucket.offset = sum;
+            sum += bucket.count;
+        }
+
+        /* Process the large buckets first. */
+        auto p_out = reinterpret_cast<record*>(output);
+        const std::size_t MT_THRESHOLD = num_records / NUM_THREADS_READ;
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            auto &bucket = buckets[bucket_id];
+            if (bucket.count >= MT_THRESHOLD) {
+                auto first = reinterpret_cast<record*>(bucket.addr);
+                auto last = first + bucket.count;
+                american_flag_sort_parallel(first, last, 1);
+                assert(std::is_sorted(first, last));
+                memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
+            }
+        }
+
+        /* Sort the remaining buckets. */
+        std::atomic_uint_fast32_t bucket_counter(0);
+        auto recurse = [&]() {
+            unsigned bucket_id;
+            while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
+                const auto &bucket = buckets[bucket_id];
+                if (bucket.count > 1 and bucket.count < MT_THRESHOLD) {
+                    auto first = reinterpret_cast<record*>(bucket.addr);
+                    auto last = first + bucket.count;
+                    select_sort_algorithm(first, last, 1);
+                    memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
+                }
+            }
+        };
+        {
+            std::array<std::thread, NUM_THREADS_READ> threads;
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+                threads[tid] = std::thread(recurse);
+            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+                threads[tid].join();
+        }
 
         const auto t_begin_write = ch::high_resolution_clock::now();
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
-        msync(output, size_in_bytes, MS_ASYNC);
-        munmap(output, size_in_bytes);
+        //msync(output, size_in_bytes, MS_ASYNC);
+        //munmap(output, size_in_bytes);
 
         const auto t_finish = ch::high_resolution_clock::now();
 
