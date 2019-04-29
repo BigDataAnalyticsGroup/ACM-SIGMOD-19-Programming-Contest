@@ -340,23 +340,31 @@ int main(int argc, const char **argv)
             sum += bucket.count;
         }
 
+        ch::high_resolution_clock::duration d_memcpy(0);
+
         /* Process the large buckets first. */
         auto p_out = reinterpret_cast<record*>(output);
-        const std::size_t MT_THRESHOLD = num_records / NUM_THREADS_READ;
+        const std::size_t MT_THRESHOLD = num_records / NUM_LOGICAL_CORES_PER_SOCKET;
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
             auto &bucket = buckets[bucket_id];
             if (bucket.count >= MT_THRESHOLD) {
+                std::cerr << "Bucket " << bucket_id << " requires MT sort.\n";
                 auto first = reinterpret_cast<record*>(bucket.addr);
                 auto last = first + bucket.count;
                 american_flag_sort_parallel(first, last, 1);
                 assert(std::is_sorted(first, last));
+                const auto t_before = ch::high_resolution_clock::now();
                 memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
+                const auto t_after = ch::high_resolution_clock::now();
+                d_memcpy += t_after - t_before;
             }
         }
+        std::cerr << "memcpy large buckets: " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms\n";
 
         /* Sort the remaining buckets. */
         std::atomic_uint_fast32_t bucket_counter(0);
         auto recurse = [&]() {
+            ch::high_resolution_clock::duration d_memcpy(0);
             unsigned bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
                 const auto &bucket = buckets[bucket_id];
@@ -364,15 +372,21 @@ int main(int argc, const char **argv)
                     auto first = reinterpret_cast<record*>(bucket.addr);
                     auto last = first + bucket.count;
                     select_sort_algorithm(first, last, 1);
+                    const auto t_before = ch::high_resolution_clock::now();
                     memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
+                    const auto t_after = ch::high_resolution_clock::now();
+                    d_memcpy += t_after - t_before;
                 }
             }
+            std::ostringstream oss;
+            oss << "d_memcpy: " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms\n";
+            std::cerr << oss.str();
         };
         {
-            std::array<std::thread, NUM_THREADS_READ> threads;
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+            std::array<std::thread, NUM_LOGICAL_CORES_TOTAL> threads;
+            for (unsigned tid = 0; tid != NUM_LOGICAL_CORES_TOTAL; ++tid)
                 threads[tid] = std::thread(recurse);
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+            for (unsigned tid = 0; tid != NUM_LOGICAL_CORES_TOTAL; ++tid)
                 threads[tid].join();
         }
 
@@ -380,8 +394,6 @@ int main(int argc, const char **argv)
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
-        //msync(output, size_in_bytes, MS_ASYNC);
-        //munmap(output, size_in_bytes);
 
         const auto t_finish = ch::high_resolution_clock::now();
 
