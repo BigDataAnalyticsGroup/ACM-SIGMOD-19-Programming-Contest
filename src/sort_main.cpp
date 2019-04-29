@@ -347,10 +347,7 @@ int main(int argc, const char **argv)
             sum += bucket.count;
         }
 
-        ch::high_resolution_clock::duration d_memcpy(0);
-
         /* Process the large buckets first. */
-        auto p_out = reinterpret_cast<record*>(output);
         const std::size_t MT_THRESHOLD = num_records / NUM_LOGICAL_CORES_PER_SOCKET;
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
             auto &bucket = buckets[bucket_id];
@@ -360,18 +357,38 @@ int main(int argc, const char **argv)
                 auto last = first + bucket.count;
                 american_flag_sort_parallel(first, last, 1);
                 assert(std::is_sorted(first, last));
-                const auto t_before = ch::high_resolution_clock::now();
-                memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
-                const auto t_after = ch::high_resolution_clock::now();
-                d_memcpy += t_after - t_before;
             }
         }
-        std::cerr << "memcpy large buckets: " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms\n";
 
         /* Sort the remaining buckets. */
         std::atomic_uint_fast32_t bucket_counter(0);
-        auto recurse = [&]() {
+
+        /* Memcpy thread. */
+#if 0
+        auto thread_memcpy = std::thread([&]() {
+            unsigned bucket_id = 0;
             ch::high_resolution_clock::duration d_memcpy(0);
+            auto p_out = reinterpret_cast<record*>(output);
+
+            while (bucket_id != NUM_BUCKETS) {
+                const unsigned max_bucket_id = std::max(bucket_counter.load(), NUM_BUCKETS);
+                for (; bucket_id < max_bucket_id; ++bucket_id) {
+                    auto &bucket = buckets[bucket_id];
+                    std::cerr << "Memcpy bucket " << bucket_id << " with " << bucket.count << " records.\n";
+                    const auto t_before = ch::high_resolution_clock::now();
+                    memcpy(p_out, bucket.addr, bucket.count * sizeof(record));
+                    p_out += bucket.count;
+                    const auto t_after = ch::high_resolution_clock::now();
+                    d_memcpy += t_after - t_before;
+                }
+            }
+
+            std::cerr << "Memcpy thread took " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms.\n";
+            assert(p_out == reinterpret_cast<record*>(output) + num_records and "Incorrect number of records copied");
+        });
+#endif
+
+        auto recurse = [&]() {
             unsigned bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
                 const auto &bucket = buckets[bucket_id];
@@ -379,15 +396,9 @@ int main(int argc, const char **argv)
                     auto first = reinterpret_cast<record*>(bucket.addr);
                     auto last = first + bucket.count;
                     select_sort_algorithm(first, last, 1);
-                    const auto t_before = ch::high_resolution_clock::now();
-                    memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
-                    const auto t_after = ch::high_resolution_clock::now();
-                    d_memcpy += t_after - t_before;
+                    assert(std::is_sorted(first, last));
                 }
             }
-            std::ostringstream oss;
-            oss << "d_memcpy: " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms\n";
-            std::cerr << oss.str();
         };
         {
             std::array<std::thread, NUM_LOGICAL_CORES_TOTAL> threads;
@@ -401,6 +412,28 @@ int main(int argc, const char **argv)
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
+
+#if 0
+        thread_memcpy.join();
+#else
+        auto p_out = reinterpret_cast<record*>(output);
+        ch::high_resolution_clock::duration d_memcpy(0);
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            auto &bucket = buckets[bucket_id];
+            const auto t_before = ch::high_resolution_clock::now();
+            memcpy(p_out, bucket.addr, bucket.count * sizeof(record));
+            p_out += bucket.count;
+            const auto t_after = ch::high_resolution_clock::now();
+            std::cerr << "Memcpy bucket " << bucket_id << " with " << bucket.count << " records took "
+                      << ch::duration_cast<ch::nanoseconds>(t_after - t_before).count() / 1e6 << " ms.\n";
+            d_memcpy += t_after - t_before;
+        }
+        std::cerr << "Memcpy took " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms.\n";
+        assert(p_out == reinterpret_cast<record*>(output) + num_records and "Incorrect number of records copied");
+#endif
+
+        msync(output, size_in_bytes, MS_ASYNC);
+        munmap(output, size_in_bytes);
 
         const auto t_finish = ch::high_resolution_clock::now();
 
