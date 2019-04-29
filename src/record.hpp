@@ -73,11 +73,16 @@ struct __attribute__((packed)) key_type : std::array<uint8_t, 10>
         const uint16_t v1_second = swap_little_big_endian(*reinterpret_cast<const uint16_t*>(second.data() + 8));
 
         /* Compare. */
-        const bool take0 = v0_first != v0_second;
-        const bool cmp0 = cmp(v0_first, v0_second);
-        const bool cmp1 = cmp(v1_first, v1_second);
+        const uint64_t cmp0 = cmp(v0_first, v0_second);
+        const uint64_t cmp1 = cmp(v1_first, v1_second);
 
-        return (take0 and cmp0) or (not take0 and cmp1);
+        uint64_t res = cmp0;
+        asm ( "cmp %[f], %[s]\n"
+              "cmove %[cmp1], %[res]"
+                : [res] "+r" (res)
+                : [f] "r" (v0_first), [s] "r" (v0_second), [cmp1] "r" (cmp1)
+                : "cc" );
+        return res;
     }
 
     public:
