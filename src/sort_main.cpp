@@ -349,7 +349,7 @@ int main(int argc, const char **argv)
 
         /* Process the large buckets first. */
         auto p_out = reinterpret_cast<record*>(output);
-        const std::size_t MT_THRESHOLD = num_records / NUM_THREADS_READ;
+        const std::size_t MT_THRESHOLD = num_records / NUM_LOGICAL_CORES_PER_SOCKET;
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
             auto &bucket = buckets[bucket_id];
             if (bucket.count >= MT_THRESHOLD) {
@@ -376,10 +376,10 @@ int main(int argc, const char **argv)
             }
         };
         {
-            std::array<std::thread, NUM_THREADS_READ> threads;
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+            std::array<std::thread, NUM_LOGICAL_CORES_TOTAL> threads;
+            for (unsigned tid = 0; tid != NUM_LOGICAL_CORES_TOTAL; ++tid)
                 threads[tid] = std::thread(recurse);
-            for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid)
+            for (unsigned tid = 0; tid != NUM_LOGICAL_CORES_TOTAL; ++tid)
                 threads[tid].join();
         }
 
@@ -387,8 +387,6 @@ int main(int argc, const char **argv)
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
-        //msync(output, size_in_bytes, MS_ASYNC);
-        //munmap(output, size_in_bytes);
 
         const auto t_finish = ch::high_resolution_clock::now();
 
