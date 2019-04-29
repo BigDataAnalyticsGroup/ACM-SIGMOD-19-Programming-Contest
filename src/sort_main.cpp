@@ -687,7 +687,7 @@ int main(int argc, const char **argv)
 
                 const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                 const std::size_t num_records_in_memory = in_memory_histogram[bucket.id];
-                const std::size_t num_records_merge_total = num_records_in_bucket + num_records_in_memory;
+                const std::size_t num_records_merge = num_records_in_bucket + num_records_in_memory;
 
                 const auto p_sorted_begin = in_memory_buckets[bucket.id];
                 auto p_sorted = p_sorted_begin;
@@ -698,7 +698,7 @@ int main(int argc, const char **argv)
                              (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
                              running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
                 auto p_out = p_out_begin;
-                const auto p_out_end = p_out + num_records_merge_total;
+                const auto p_out_end = p_out + num_records_merge;
 
                 /* Wait for the sort to finish. */
                 if (bucket.size) {
@@ -709,7 +709,7 @@ int main(int argc, const char **argv)
                     d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
                 }
 
-                madvise(p_out_begin, num_records_merge_total * sizeof(record), MADV_SEQUENTIAL);
+                madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
 
                 const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
                 if (bucket.size) {
