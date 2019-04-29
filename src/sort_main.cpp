@@ -316,7 +316,6 @@ int main(int argc, const char **argv)
             void *buffer; ///< the buffer assigned to the stream object
             std::size_t size; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the memory region of the loaded bucket
-            std::thread loader; ///< the thread that loads the bucket into memory
             std::thread sorter; ///< the thread that sorts the bucket
         };
         std::array<bucket_t, NUM_BUCKETS> buckets;
@@ -535,34 +534,10 @@ int main(int argc, const char **argv)
 #ifndef NDEBUG
             std::cerr << "i = " << i << "\n";
 #endif
-
-            /* Load the next bucket. */
-            if (i < NUM_BUCKETS) {
-                auto &bucket = buckets[i];
-                if (bucket.size) {
-                    /* Get the bucket data into memory. */
-                    assert(bucket.addr == nullptr);
-                    bucket.loader = std::thread([&bucket, &d_load_bucket_total]() {
-                        const auto t_load_bucket_begin = ch::high_resolution_clock::now();
-                        bucket.addr = malloc(bucket.size);
-                        if (not bucket.addr)
-                            err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
-                        read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
-                        const auto t_load_bucket_end = ch::high_resolution_clock::now();
-                        d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
-                    });
-                }
-            }
-
+            /* Sort bucket. */
             if (i >= 1 and i <= NUM_BUCKETS) {
                 auto &bucket = buckets[i - 1];
                 if (bucket.size) {
-                    const auto t_wait_for_load_bucket_before = ch::high_resolution_clock::now();
-                    assert(bucket.loader.joinable());
-                    bucket.loader.join();
-                    const auto t_wait_for_load_bucket_after = ch::high_resolution_clock::now();
-                    d_wait_for_load_bucket_total += t_wait_for_load_bucket_after - t_wait_for_load_bucket_before;
-
                     record *records = reinterpret_cast<record*>(bucket.addr);
                     const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                     bucket.sorter = std::thread([records, num_records_in_bucket, &d_sort_total]() {
@@ -574,6 +549,7 @@ int main(int argc, const char **argv)
                 }
             }
 
+            /* Merge bucket. */
             if (i >= 2) {
                 auto &bucket = buckets[i - 2];
 
@@ -671,6 +647,23 @@ int main(int argc, const char **argv)
                 const auto t_resource_end = ch::high_resolution_clock::now();
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
             }
+
+            /* Load bucket. */
+            if (i < NUM_BUCKETS) {
+                auto &bucket = buckets[i];
+                if (bucket.size) {
+                    /* Get the bucket data into memory. */
+                    assert(bucket.addr == nullptr);
+                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
+                    bucket.addr = malloc(bucket.size);
+                    if (not bucket.addr)
+                        err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
+                    read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
+                    const auto t_load_bucket_end = ch::high_resolution_clock::now();
+                    d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
+                }
+            }
+
         }
 
 #ifdef WITH_PCM
