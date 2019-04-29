@@ -681,7 +681,7 @@ int main(int argc, const char **argv)
                 }
             }
 
-            /* Merge bucket i. */
+            /* Merge bucket i-2. */
             if (i >= 2) {
                 auto &bucket = buckets[i - 2];
 
@@ -780,7 +780,7 @@ int main(int argc, const char **argv)
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
             }
 
-            /* Load bucket i-2. */
+            /* Load bucket i. */
             if (i < NUM_BUCKETS) {
                 auto &bucket = buckets[i];
                 if (bucket.size) {
