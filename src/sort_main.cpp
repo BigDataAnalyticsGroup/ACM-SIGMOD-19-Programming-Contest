@@ -101,11 +101,22 @@ struct thread_info
 
 void readall(int fd, void *buf, std::size_t count, off_t offset)
 {
+    if (posix_fadvise(fd, offset, count, POSIX_FADV_SEQUENTIAL))
+        warn("Failed to advise sequential file access");
     uint8_t *dst = reinterpret_cast<uint8_t*>(buf);
     while (count) {
         const int bytes_read = pread(fd, dst, count, offset);
         if (bytes_read == -1)
             err(EXIT_FAILURE, "Could not read from fd %d", fd);
+
+        /* Discard read pages. */
+        {
+            auto page_offset = offset & ~(PAGESIZE - 1); // round down to multiple of a page
+            auto page_count = count & ~(PAGESIZE - 1); // round down to multiple of a page
+            if (posix_fadvise(fd, page_offset, page_count, POSIX_FADV_DONTNEED))
+                warn("Failed to discard bytes %lu to %lu of input", page_offset, page_offset + page_count);
+        }
+
         count -= bytes_read;
         offset += bytes_read;
         dst += bytes_read;
@@ -206,8 +217,11 @@ int main(int argc, const char **argv)
     {
         std::cerr << "In-Memory Sorting\n";
 
-        /* Prepare output for sequential write. */
-        madvise(output, size_in_bytes, MADV_SEQUENTIAL);
+        /* Queue the pages at the beginning of the output file to be brought into the page cache early. */
+        const std::size_t bytes_to_prefetch = std::min(IN_MEMORY_BUFFER_SIZE - size_in_bytes, size_in_bytes);
+        std::cerr << "Read ahead the first " << double(bytes_to_prefetch) / (1024 * 1024) << " MiB of the output.\n";
+        if (readahead(fd_out, 0, bytes_to_prefetch))
+            warn("Readahead on output file failed");
 
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read and partition data into main memory.\n";
@@ -341,6 +355,12 @@ int main(int argc, const char **argv)
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
         std::cerr << "Finish the buckets.\n";
+
+        /* Queue the remaining pages of the output file to be brought into the page cache. */
+        if (size_in_bytes - bytes_to_prefetch) {
+            if (readahead(fd_out, bytes_to_prefetch, size_in_bytes - bytes_to_prefetch))
+                warn("Readahead on output file failed");
+        }
 
         /* Compute bucket offsets. */
         for (std::size_t bucket_id = 0, sum = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
