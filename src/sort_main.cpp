@@ -206,6 +206,9 @@ int main(int argc, const char **argv)
     {
         std::cerr << "In-Memory Sorting\n";
 
+        /* Prepare output for sequential write. */
+        madvise(output, size_in_bytes, MADV_SEQUENTIAL);
+
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read and partition data into main memory.\n";
 
