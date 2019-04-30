@@ -254,12 +254,21 @@ int main(int argc, const char **argv)
             for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
                 heads[bucket_id] = buffers[bucket_id].data();
 
+            /* Prepare for sequential read. */
+            posix_fadvise(fd_in, offset, count * sizeof(record), POSIX_FADV_SEQUENTIAL);
+
             /* Read as many records at once as fit into our buffer. */
             while (count >= NUM_RECORDS_READ) {
                 const auto bytes_read = pread(fd_in, read_buffer, NUM_RECORDS_READ * sizeof(record), offset);
                 if (bytes_read != NUM_RECORDS_READ * sizeof(record)) {
                     warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
                     return;
+                }
+                {
+                    auto page_offset = offset & ~(PAGESIZE - 1); // round down to multiple of a page
+                    auto page_count = (NUM_RECORDS_READ * sizeof(record)) & ~(PAGESIZE - 1); // round down to multiple of a page
+                    if (posix_fadvise(fd_in, page_offset, page_count, POSIX_FADV_DONTNEED))
+                        warn("Failed to discard bytes %lu to %lu of input", page_offset, page_offset + page_count);
                 }
                 offset += bytes_read;
                 count -= NUM_RECORDS_READ;
@@ -286,6 +295,12 @@ int main(int argc, const char **argv)
                 if (bytes_read != int(count * sizeof(record))) {
                     warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
                     return;
+                }
+                {
+                    auto page_offset = offset & ~(PAGESIZE - 1); // round down to multiple of a page
+                    auto page_count = (count * sizeof(record)) & ~(PAGESIZE - 1); // round down to multiple of a page
+                    if (posix_fadvise(fd_in, page_offset, page_count, POSIX_FADV_DONTNEED))
+                        warn("Failed to discard bytes %lu to %lu of input", page_offset, page_offset + page_count);
                 }
 
                 for (auto r = read_buffer, end = read_buffer + count; r != end; ++r) {
