@@ -220,6 +220,9 @@ int main(int argc, const char **argv)
         /* Queue the pages at the beginning of the output file to be brought into the page cache early. */
         const std::size_t bytes_to_prefetch = std::min(IN_MEMORY_BUFFER_SIZE - size_in_bytes, size_in_bytes);
         std::cerr << "Read ahead the first " << double(bytes_to_prefetch) / (1024 * 1024) << " MiB of the output.\n";
+        if (mlock2(output, size_in_bytes, MLOCK_ONFAULT))
+            warn("Failed to lock pages on fault of output file.\n");
+
         if (readahead(fd_out, 0, bytes_to_prefetch))
             warn("Readahead on output file failed");
 
@@ -371,10 +374,20 @@ int main(int argc, const char **argv)
 
         std::cerr << "Finish the buckets.\n";
 
-        /* Queue the remaining pages of the output file to be brought into the page cache. */
-        if (size_in_bytes - bytes_to_prefetch) {
-            if (readahead(fd_out, bytes_to_prefetch, size_in_bytes - bytes_to_prefetch))
-                warn("Readahead on output file failed");
+        /* How many pages of the output file are already in the page cache? */
+        {
+            const auto num_pages = (size_in_bytes + PAGESIZE - 1) / PAGESIZE;
+            unsigned char *vec = new unsigned char[num_pages]();
+            if (mincore(output, size_in_bytes, vec)) {
+                warn("Failed to get number of pages in cache");
+            } else {
+                unsigned num_pages_in_cache = 0;
+                for (auto p = vec, end = vec + num_pages; p != end; ++p)
+                    num_pages_in_cache += *p & 0b1;
+                std::cerr << "Currently there are " << num_pages_in_cache << " of " << num_pages
+                    << " pages of the output file in the page cache.\n";
+            }
+            delete[] vec;
         }
 
         /* Compute bucket offsets. */
