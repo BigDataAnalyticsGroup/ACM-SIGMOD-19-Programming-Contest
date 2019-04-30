@@ -393,8 +393,10 @@ int main(int argc, const char **argv)
         std::cerr << "Write sorted data back to disk.\n";
 
         pool.stop(/* isWait = */ true);
+#ifndef NDEBUG
         msync(output, size_in_bytes, MS_ASYNC);
         munmap(output, size_in_bytes);
+#endif
 
         const auto t_finish = ch::high_resolution_clock::now();
 
@@ -787,8 +789,10 @@ int main(int argc, const char **argv)
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
-        //if (munmap(in_memory_buffer, num_bytes_to_sort))
-            //err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
+#ifndef NDEBUG
+        if (munmap(in_memory_buffer, num_bytes_to_sort))
+            err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
+#endif
 
         /* Report times and throughput. */
         {
