@@ -444,7 +444,8 @@ int main(int argc, const char **argv)
         const auto t_begin_read = ch::high_resolution_clock::now();
 
         /* Concurrently read the first part of the file. */
-        std::cerr << "Read the first " << num_records_to_sort << " records (" << num_bytes_to_sort << " bytes).\n";
+        std::cerr << "Read the first " << num_records_to_sort << " records ("
+                  << double(num_bytes_to_sort) / (1024 * 1024) << " MiB).\n";
         void *in_memory_buffer = mmap(nullptr, num_bytes_to_sort, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
                                       /* fd= */ -1, 0);
         if (in_memory_buffer == MAP_FAILED)
@@ -458,7 +459,9 @@ int main(int argc, const char **argv)
         ch::high_resolution_clock::time_point t_begin_sort, t_end_sort;
 
         /* Sort the records in-memory. */
-        std::cerr << "Sort " << num_records_to_sort << " records in-memory in a separate thread.\n";
+        std::cerr << "Sort " << num_records_to_sort << " records ("
+                  << double(num_bytes_to_sort) / (1024 * 1024)
+                  << " MiB) in-memory in a separate thread.\n";
         histogram_t<unsigned, NUM_BUCKETS> in_memory_histogram;
         std::array<record*, NUM_BUCKETS> in_memory_buckets;
         std::thread thread_sort = std::thread([&]() {
@@ -509,7 +512,8 @@ int main(int argc, const char **argv)
         /* Read second part and partition. */
         if (num_records_to_partition) {
             std::cerr << "Read and partition the remaining " << num_records_to_partition << " records ("
-                      << num_bytes_to_partition << " bytes), starting at offset " << num_bytes_to_sort << ".\n";
+                      << double(num_bytes_to_partition) / (1024 * 1024) << " MiB), starting at offset "
+                      << num_bytes_to_sort << ".\n";
 
             /* Partition concurrently by evenly dividing the input between multiple partitioning threads.  Every thread
              * owns a buffer of N records for each bucket.  Read the input and append each record to the buffer of its
@@ -743,6 +747,11 @@ int main(int argc, const char **argv)
                         const uintptr_t msync_end = (reinterpret_cast<uintptr_t>(p_out_end) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                         msync(reinterpret_cast<void*>(msync_begin), msync_end - msync_begin, MS_SYNC);
                         num_records_synced += num_records_merge;
+                        if (num_records_synced >= num_records_to_partition) {
+                            std::cerr << "Synced " << num_records_synced << " records ("
+                                      << double(num_records_synced * sizeof(record)) / (1024 * 1024)
+                                      << " MiB) to disk.\n";
+                        }
                     }
                 }
 
