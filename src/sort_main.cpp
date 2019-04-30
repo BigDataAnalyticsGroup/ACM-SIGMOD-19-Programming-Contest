@@ -586,27 +586,8 @@ int main(int argc, const char **argv)
             };
 
 #ifdef SUBMISSION
-            /* Explicitly bind the partitioning to logical cores on NUMA region 1, where it can operate independently of
-             * sorting. */
-            {
-                cpu_set_t *cpus = CPU_ALLOC(40);
-                if (not cpus)
-                    err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
-                const auto size = CPU_ALLOC_SIZE(40);
-                CPU_ZERO_S(size, cpus);
-                for (int cpu = 10; cpu != 20; ++cpu)
-                    CPU_SET_S(cpu, size, cpus);
-                for (int cpu = 30; cpu != 40; ++cpu)
-                    CPU_SET_S(cpu, size, cpus);
-                assert(CPU_COUNT_S(size, cpus) == 20 and "allocated incorrect number of logical CPUs");
-
-                /* Bind process and all children to the desired logical CPUs. */
-                sched_setaffinity(0 /* this thread */, size, cpus);
-
-                CPU_FREE(cpus);
-            }
+            bind_to_cpus(SOCKET1_CPUS);
 #endif
-
             std::array<std::thread, NUM_THREADS_PARTITION> threads;
             const std::size_t count_per_thread = num_records_to_partition / NUM_THREADS_PARTITION;
             std::size_t offset = num_records_to_sort;
@@ -617,24 +598,8 @@ int main(int argc, const char **argv)
             }
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid)
                 threads[tid].join();
-
 #ifdef SUBMISSION
-            /* Set back to *all* logical cores again. */
-            {
-                cpu_set_t *cpus = CPU_ALLOC(40);
-                if (not cpus)
-                    err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
-                const auto size = CPU_ALLOC_SIZE(40);
-                CPU_ZERO_S(size, cpus);
-                for (int cpu = 0; cpu != 40; ++cpu)
-                    CPU_SET_S(cpu, size, cpus);
-                assert(CPU_COUNT_S(size, cpus) == 40 and "allocated incorrect number of logical CPUs");
-
-                /* Bind process and all children to the desired logical CPUs. */
-                sched_setaffinity(0 /* this thread */, size, cpus);
-
-                CPU_FREE(cpus);
-            }
+            bind_to_cpus(ALL_CPUS);
 #endif
         }
 
