@@ -27,6 +27,7 @@
 #warning "Compiling submission build"
 #endif
 
+#include "asmlib.h"
 #include "hwtop.hpp"
 #include "mmap.hpp"
 #include "record.hpp"
@@ -255,9 +256,7 @@ int main(int argc, const char **argv)
                         auto &dst_bucket = buckets[bucket_id]; // get the destination bucket
                         const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
                         auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                        memcpy(dst,
-                               heads[bucket_id],
-                               NUM_RECORDS_PER_BUFFER * sizeof(record));
+                        A_memcpy(dst, heads[bucket_id], NUM_RECORDS_PER_BUFFER * sizeof(record));
                     }
                 }
             }
@@ -281,9 +280,7 @@ int main(int argc, const char **argv)
                         auto &dst_bucket = buckets[bucket_id];
                         const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
                         auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                        memcpy(dst,
-                               heads[bucket_id],
-                               NUM_RECORDS_PER_BUFFER * sizeof(record));
+                        A_memcpy(dst, heads[bucket_id], NUM_RECORDS_PER_BUFFER * sizeof(record));
                     }
                 }
             }
@@ -299,9 +296,7 @@ int main(int argc, const char **argv)
                     auto num_records_in_buffer = head - buffer.data();
                     const auto count = dst_bucket.count.fetch_add(num_records_in_buffer, std::memory_order_relaxed);
                     auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                    memcpy(dst,
-                           buffers[bucket_id].data(),
-                           num_records_in_buffer * sizeof(record));
+                    A_memcpy(dst, buffers[bucket_id].data(), num_records_in_buffer * sizeof(record));
                 }
             }
 
@@ -421,7 +416,7 @@ int main(int argc, const char **argv)
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
             auto &bucket = buckets[bucket_id];
             const auto t_before = ch::high_resolution_clock::now();
-            memcpy(p_out, bucket.addr, bucket.count * sizeof(record));
+            A_memcpy(p_out, bucket.addr, bucket.count * sizeof(record));
             p_out += bucket.count;
             const auto t_after = ch::high_resolution_clock::now();
             std::cerr << "Memcpy bucket " << bucket_id << " with " << bucket.count << " records took "

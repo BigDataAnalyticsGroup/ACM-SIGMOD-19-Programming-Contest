@@ -32,5 +32,5 @@ SET(CMAKE_CXX_FLAGS_DEBUG       "${CMAKE_CXX_FLAGS_DEBUG} -fno-omit-frame-pointe
 
 # Directories
 include_directories(src/ pcm/)
-link_directories(pcm/)
+link_directories(pcm/ asmlib/)
 add_subdirectory(src/)
