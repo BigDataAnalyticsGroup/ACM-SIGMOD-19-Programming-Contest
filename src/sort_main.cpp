@@ -87,6 +87,8 @@ constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 4UL * 1024 * 1024 * 1024; // 4 GiB
 #endif
 #endif
 
+uint8_t dead_byte;
+
 
 /** Information for the threads. */
 struct thread_info
@@ -223,8 +225,17 @@ int main(int argc, const char **argv)
         if (mlock2(output, size_in_bytes, MLOCK_ONFAULT))
             warn("Failed to lock pages on fault of output file.\n");
 
+#define WITH_READAHEAD
+#ifdef WITH_READAHEAD
         if (readahead(fd_out, 0, bytes_to_prefetch))
             warn("Readahead on output file failed");
+#else
+        std::thread([output, bytes_to_prefetch]() {
+            uint8_t *p = reinterpret_cast<uint8_t*>(output);
+            for (auto end = p + bytes_to_prefetch; p < end; p += PAGESIZE)
+                dead_byte += *p;
+        }).detach();
+#endif
 
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read and partition data into main memory.\n";
