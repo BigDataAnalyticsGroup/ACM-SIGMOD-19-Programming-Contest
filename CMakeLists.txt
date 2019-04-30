@@ -31,6 +31,6 @@ SET(CMAKE_CXX_FLAGS             "-std=c++17 ${CMAKE_CXX_FLAGS} ${CMAKE_COMPILE_F
 SET(CMAKE_CXX_FLAGS_DEBUG       "${CMAKE_CXX_FLAGS_DEBUG} -fno-omit-frame-pointer -fno-optimize-sibling-calls -fsanitize=address")
 
 # Directories
-include_directories(src/ pcm/)
+include_directories(src/ pcm/ CTPL/)
 link_directories(pcm/ asmlib/)
 add_subdirectory(src/)
