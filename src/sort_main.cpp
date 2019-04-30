@@ -27,6 +27,8 @@
 #warning "Compiling submission build"
 #endif
 
+#include "asmlib.h"
+#include "ctpl.h"
 #include "hwtop.hpp"
 #include "mmap.hpp"
 #include "record.hpp"
@@ -197,6 +199,9 @@ int main(int argc, const char **argv)
         /*----- IN-MEMORY SORTING ------------------------------------------------------------------------------------*/
         std::cerr << "===== In-Memory Sorting =====\n";
 
+        /* Prepare output for sequential write. */
+        madvise(output, size_in_bytes, MADV_SEQUENTIAL);
+
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read and partition data into main memory.\n";
 
@@ -248,9 +253,7 @@ int main(int argc, const char **argv)
                         auto &dst_bucket = buckets[bucket_id]; // get the destination bucket
                         const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
                         auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                        memcpy(dst,
-                               heads[bucket_id],
-                               NUM_RECORDS_PER_BUFFER * sizeof(record));
+                        A_memcpy(dst, heads[bucket_id], NUM_RECORDS_PER_BUFFER * sizeof(record));
                     }
                 }
             }
@@ -274,9 +277,7 @@ int main(int argc, const char **argv)
                         auto &dst_bucket = buckets[bucket_id];
                         const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
                         auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                        memcpy(dst,
-                               heads[bucket_id],
-                               NUM_RECORDS_PER_BUFFER * sizeof(record));
+                        A_memcpy(dst, heads[bucket_id], NUM_RECORDS_PER_BUFFER * sizeof(record));
                     }
                 }
             }
@@ -292,9 +293,7 @@ int main(int argc, const char **argv)
                     auto num_records_in_buffer = head - buffer.data();
                     const auto count = dst_bucket.count.fetch_add(num_records_in_buffer, std::memory_order_relaxed);
                     auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                    memcpy(dst,
-                           buffers[bucket_id].data(),
-                           num_records_in_buffer * sizeof(record));
+                    A_memcpy(dst, buffers[bucket_id].data(), num_records_in_buffer * sizeof(record));
                 }
             }
 
@@ -317,6 +316,9 @@ int main(int argc, const char **argv)
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid)
                 threads[tid].join();
         }
+#ifdef SUBMISSION
+        bind_to_cpus(ALL_CPUS);
+#endif
 
 #ifndef NDEBUG
         /* Validate buckets. */
@@ -340,10 +342,15 @@ int main(int argc, const char **argv)
             sum += bucket.count;
         }
 
-        ch::high_resolution_clock::duration d_memcpy(0);
+        ctpl::thread_pool pool(4, 64);
+        auto thread_memcpy = [&](int, std::size_t bucket_id) {
+            auto &bucket = buckets[bucket_id];
+            assert(bucket.count);
+            auto p_out = reinterpret_cast<record*>(output);
+            A_memcpy(p_out + bucket.offset, bucket.addr, bucket.count * sizeof(record));
+        };
 
         /* Process the large buckets first. */
-        auto p_out = reinterpret_cast<record*>(output);
         const std::size_t MT_THRESHOLD = num_records / NUM_LOGICAL_CORES_PER_SOCKET;
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
             auto &bucket = buckets[bucket_id];
@@ -353,18 +360,13 @@ int main(int argc, const char **argv)
                 auto last = first + bucket.count;
                 american_flag_sort_parallel(first, last, 1);
                 assert(std::is_sorted(first, last));
-                const auto t_before = ch::high_resolution_clock::now();
-                memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
-                const auto t_after = ch::high_resolution_clock::now();
-                d_memcpy += t_after - t_before;
+                pool.push(thread_memcpy, bucket_id);
             }
         }
-        std::cerr << "memcpy large buckets: " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms\n";
 
         /* Sort the remaining buckets. */
         std::atomic_uint_fast32_t bucket_counter(0);
         auto recurse = [&]() {
-            ch::high_resolution_clock::duration d_memcpy(0);
             unsigned bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
                 const auto &bucket = buckets[bucket_id];
@@ -372,15 +374,10 @@ int main(int argc, const char **argv)
                     auto first = reinterpret_cast<record*>(bucket.addr);
                     auto last = first + bucket.count;
                     select_sort_algorithm(first, last, 1);
-                    const auto t_before = ch::high_resolution_clock::now();
-                    memcpy(p_out + bucket.offset, first, bucket.count * sizeof(record));
-                    const auto t_after = ch::high_resolution_clock::now();
-                    d_memcpy += t_after - t_before;
+                    assert(std::is_sorted(first, last));
+                    pool.push(thread_memcpy, bucket_id);
                 }
             }
-            std::ostringstream oss;
-            oss << "d_memcpy: " << ch::duration_cast<ch::nanoseconds>(d_memcpy).count() / 1e6 << " ms\n";
-            std::cerr << oss.str();
         };
         {
             std::array<std::thread, NUM_LOGICAL_CORES_TOTAL> threads;
@@ -394,6 +391,10 @@ int main(int argc, const char **argv)
 
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
+
+        pool.stop(/* isWait = */ true);
+        msync(output, size_in_bytes, MS_ASYNC);
+        munmap(output, size_in_bytes);
 
         const auto t_finish = ch::high_resolution_clock::now();
 

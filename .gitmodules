@@ -1,3 +1,6 @@
 [submodule "pcm"]
 	path = pcm
 	url = git@github.com:opcm/pcm.git
+[submodule "CTPL"]
+	path = CTPL
+	url = git@github.com:vit-vit/CTPL.git
