@@ -355,6 +355,7 @@ int main(int argc, const char **argv)
             assert(bucket.count);
             auto p_out = reinterpret_cast<record*>(output);
             A_memcpy(p_out + bucket.offset, bucket.addr, bucket.count * sizeof(record));
+            free(bucket.addr);
         };
 
         /* Process the large buckets first. */
