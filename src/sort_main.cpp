@@ -739,29 +739,27 @@ int main(int argc, const char **argv)
                 d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
 
                 /* Release resources. */
-                constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
-                {
-                    static std::size_t num_records_synced = 0;
-                    if (num_records_synced < num_records_to_partition) {
-                        const uintptr_t msync_begin = reinterpret_cast<uintptr_t>(p_out_begin) & ~PAGEMASK; // round down to bage boundary
-                        const uintptr_t msync_end = (reinterpret_cast<uintptr_t>(p_out_end) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
-                        msync(reinterpret_cast<void*>(msync_begin), msync_end - msync_begin, MS_SYNC);
-                        num_records_synced += num_records_merge;
-                        if (num_records_synced >= num_records_to_partition) {
-                            std::cerr << "Synced " << num_records_synced << " records ("
-                                      << double(num_records_synced * sizeof(record)) / (1024 * 1024)
-                                      << " MiB) to disk.\n";
-                        }
-                    }
-                }
-
                 std::thread([=, &bucket]() {
+                    constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
+                    static std::atomic_size_t num_records_synced(0);
                     const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
                     const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
+
+                    const auto n_syncd = num_records_synced.fetch_add(num_records_merge);
+                    if (n_syncd < num_records_to_partition) {
+                        const uintptr_t msync_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to bage boundary
+                        const uintptr_t msync_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
+                        msync(reinterpret_cast<void*>(msync_begin), msync_end - msync_begin, MS_SYNC);
+                        if (n_syncd + num_records_merge >= num_records_to_partition) {
+                            std::cerr << "Synced " << (n_syncd + num_records_merge) << " records ("
+                                      << double((n_syncd + num_records_merge) * sizeof(record)) / (1024 * 1024)
+                                      << " MiB) to disk.\n";
+                        }
+                    }
 
                     if (dontneed_sorted_length)
                         munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
