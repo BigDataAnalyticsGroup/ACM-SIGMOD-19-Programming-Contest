@@ -74,11 +74,13 @@ constexpr std::size_t NUM_BLOCKS_PER_SLAB = 1024;
 #ifdef SUBMISSION
 constexpr unsigned NUM_THREADS_READ = NUM_LOGICAL_CORES_TOTAL;
 constexpr unsigned NUM_THREADS_PARTITION = NUM_LOGICAL_CORES_PER_SOCKET;
+constexpr unsigned NUM_THREADS_SORT_BUCKETS = NUM_LOGICAL_CORES_TOTAL;
 constexpr const char * const OUTPUT_PATH = "/output-disk";
 constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 28UL * 1024 * 1024 * 1024; // 26 GiB
 #else
 constexpr unsigned NUM_THREADS_READ = 4;
 constexpr unsigned NUM_THREADS_PARTITION = 6;
+constexpr unsigned NUM_THREADS_SORT_BUCKETS = 8;
 constexpr const char * const OUTPUT_PATH = "./buckets";
 #ifndef NDEBUG
 constexpr std::size_t IN_MEMORY_BUFFER_SIZE = 1UL * 1024 * 1024 * 1024; // 1 GiB
@@ -446,13 +448,12 @@ int main(int argc, const char **argv)
                 }
             }
         };
-        {
-            std::array<std::thread, NUM_LOGICAL_CORES_TOTAL> threads;
-            for (unsigned tid = 0; tid != NUM_LOGICAL_CORES_TOTAL; ++tid)
-                threads[tid] = std::thread(recurse);
-            for (unsigned tid = 0; tid != NUM_LOGICAL_CORES_TOTAL; ++tid)
-                threads[tid].join();
-        }
+        std::array<std::thread, NUM_THREADS_SORT_BUCKETS> threads;
+        for (unsigned tid = 0; tid != NUM_THREADS_SORT_BUCKETS; ++tid)
+            threads[tid] = std::thread(sort_bucket);
+        for (unsigned tid = 0; tid != NUM_THREADS_SORT_BUCKETS; ++tid)
+            threads[tid].join();
+        assert(std::is_sorted(p_out, p_end));
 
         const auto t_begin_write = ch::high_resolution_clock::now();
 
