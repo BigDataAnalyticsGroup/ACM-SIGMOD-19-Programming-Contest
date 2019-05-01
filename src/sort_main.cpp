@@ -49,6 +49,7 @@
 #include <sched.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <thread>
 #include <unistd.h>
@@ -219,138 +220,163 @@ int main(int argc, const char **argv)
     /* Choose the algorithm based on the file size. */
     if (size_in_bytes <= IN_MEMORY_BUFFER_SIZE)
     {
+#ifndef NDEBUG
+        auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
+        read_concurrent(fd_in, buf, size_in_bytes, 0);
+        auto hist = compute_histogram_parallel(buf, buf + num_records, 0, NUM_THREADS_READ);
+        std::cerr << hist << std::endl;
+        free(buf);
+#endif
+
         std::cerr << "In-Memory Sorting\n";
 
-        /* Queue the pages at the beginning of the output file to be brought into the page cache early. */
-        const std::size_t bytes_to_prefetch = std::min(IN_MEMORY_BUFFER_SIZE - size_in_bytes, size_in_bytes);
-        std::cerr << "Read ahead the first " << double(bytes_to_prefetch) / (1024 * 1024) << " MiB of the output.\n";
-        if (mlock2(output, size_in_bytes, MLOCK_ONFAULT))
-            warn("Failed to lock pages on fault of output file.\n");
+        record *const p_out = reinterpret_cast<record*>(output);
+        record *const p_end = p_out + num_records;
 
-#define WITH_READAHEAD
-#ifdef WITH_READAHEAD
-        if (readahead(fd_out, 0, bytes_to_prefetch))
-            warn("Readahead on output file failed");
-#else
-        std::thread([output, bytes_to_prefetch]() {
-            uint8_t *p = reinterpret_cast<uint8_t*>(output);
-            for (auto end = p + bytes_to_prefetch; p < end; p += PAGESIZE)
-                dead_byte += *p;
-        }).detach();
-#endif
+        /* Lock pages of the output file on fault.  This prevents unwanted page faults during the sort. */
+        syscall(__NR_mlock2, output, size_in_bytes, /* MLOCK_ONFAULT */ 1U);
+        if (readahead(fd_out, 0, size_in_bytes))
+            warn("Failed to queue readahead of output file");
+
+        /* Check whether the data set is pure ASCII. */
+        constexpr unsigned char FIRST_ASCII = 32u;
+        constexpr unsigned char LAST_ASCII = 126u;
+        bool is_pure_ASCII = true;
+        /* Check whether one of the first 10 keys contains a non-ASCII byte. */
+        for (std::size_t i = 0; i != 10; ++i) {
+            record r;
+            read(fd_in, &r, sizeof(r));
+            for (uint8_t k : r.key) {
+                if (k < FIRST_ASCII or k > LAST_ASCII) {
+                    is_pure_ASCII = false;
+                    break;
+                }
+            }
+        }
+
+        /* Estimate the bucket size and positions for the ASCII data set. */
+        std::array<std::size_t, NUM_BUCKETS> bucket_offset_output;
+        std::size_t num_records_per_bucket_avg = 0;
+        if (is_pure_ASCII) {
+            constexpr unsigned COUNT_ASCII_CHARS = LAST_ASCII - FIRST_ASCII + 1;
+            num_records_per_bucket_avg = num_records / COUNT_ASCII_CHARS;
+            std::cerr << "Assuming the data set is pure ASCII.  Predict an average bucket size of "
+                      << num_records_per_bucket_avg << ".\n";
+            {
+                std::size_t offset = 0;
+                for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+                    bucket_offset_output[bucket_id] = offset;
+                    if (bucket_id >= FIRST_ASCII and bucket_id <= LAST_ASCII)
+                        offset += num_records_per_bucket_avg;
+                }
+            }
+        } else {
+            num_records_per_bucket_avg = num_records / NUM_BUCKETS;
+            std::cerr << "The data set contains non-ASCII values.  Predict an average bucket size of "
+                      << num_records_per_bucket_avg << ".\n";
+            {
+                std::size_t offset = 0;
+                for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+                    bucket_offset_output[bucket_id] = offset;
+                    offset += num_records_per_bucket_avg;
+                }
+            }
+        }
+
+        /* Create atomic counters for the size of the buckets in the output file. */
+        std::array<std::atomic_size_t, NUM_BUCKETS> bucket_size_output{ {0} };
+
+        /* Create virtual overflow buckets. */
+        struct bucket_t {
+            std::atomic_size_t count{0};
+            record *addr = nullptr;
+        };
+        std::array<bucket_t, NUM_BUCKETS> overflow_buckets;
+        /* Assign custom, large buffer to overflow buckets. */
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
+            overflow_buckets[bucket_id].addr = new record[num_records_per_bucket_avg]; // overprovision memory for the bucket
 
         const auto t_begin_read = ch::high_resolution_clock::now();
         std::cerr << "Read and partition data into main memory.\n";
 
-        /* Create buckets. */
-        struct bucket_t {
-            std::size_t id; ///< the original id of the bucket; in [0, 255]
-            std::atomic_size_t count{0}; ///< the number of records in the bucket
-            std::size_t offset; ///< offset in number of records
-            void *addr = nullptr; ///< the address of the memory region of the loaded bucket
-        };
-        std::array<bucket_t, NUM_BUCKETS> buckets;
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            /* Assign custom, large buffer to file stream. */
-            buckets[bucket_id].id = bucket_id;
-            buckets[bucket_id].addr = malloc(size_in_bytes); // overprovision memory for the bucket
-        }
-
-        auto partition = [fd_in, argv, &buckets] (std::size_t offset, std::size_t count) {
+        auto partition = [&] (std::size_t offset, std::size_t count) {
             constexpr std::size_t NUM_RECORDS_READ = 10000;
-            constexpr std::size_t NUM_RECORDS_PER_BUFFER = 1024;
+            constexpr std::size_t NUM_RECORDS_PER_LOCAL_BUCKET = 1024;
 
-            std::ostringstream oss;
+            auto read_buffer = new record[NUM_RECORDS_READ];
+            using local_bucket_t = std::array<record, NUM_RECORDS_PER_LOCAL_BUCKET>;
+            auto local_buckets = new local_bucket_t[NUM_BUCKETS];
+            std::array<record*, NUM_BUCKETS> heads;
 
-            auto read_buffer = new record[NUM_RECORDS_READ]; ///< buffer to read into from input file
-            using buffer_t = std::array<record, NUM_RECORDS_PER_BUFFER>;
-            auto buffers = new buffer_t[NUM_BUCKETS]; ///< write-back buffer for each bucket file
-            std::array<record*, NUM_BUCKETS> heads; ///< next empty slot in each write-back buffer
-
+            /* Initialize heads. */
             for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
-                heads[bucket_id] = buffers[bucket_id].data();
+                heads[bucket_id] = local_buckets[bucket_id].data();
 
-            /* Prepare for sequential read. */
-            posix_fadvise(fd_in, offset, count * sizeof(record), POSIX_FADV_SEQUENTIAL);
+            /* This function flushes the contents of a local bucket to the output, if they fit, and falls back to the
+             * overflow bucket if necessary. */
+            auto flush_bucket = [&](std::size_t bucket_id) {
+                assert(bucket_id < NUM_BUCKETS);
+                auto &the_bucket = local_buckets[bucket_id];
+                auto the_head = heads[bucket_id];
 
-            /* Read as many records at once as fit into our buffer. */
-            while (count >= NUM_RECORDS_READ) {
-                const auto bytes_read = pread(fd_in, read_buffer, NUM_RECORDS_READ * sizeof(record), offset);
-                if (bytes_read != NUM_RECORDS_READ * sizeof(record)) {
-                    warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
-                    return;
+                const std::size_t num_records_to_write = the_head - the_bucket.data();
+                const auto old_size_out = bucket_size_output[bucket_id].fetch_add(num_records_to_write);
+                std::size_t num_records_written_to_output = 0;
+                if (old_size_out < num_records_per_bucket_avg) {
+                    /* Determine how many records fit into the output bucket. */
+                    num_records_written_to_output = std::min(num_records_to_write, num_records_per_bucket_avg - old_size_out);
+                    const std::size_t bucket_offset = bucket_offset_output[bucket_id];
+                    assert(bucket_offset <= num_records);
+                    /* Append these records to the output buckets. */
+                    memcpy(p_out + bucket_offset + old_size_out,
+                           the_bucket.data(),
+                           num_records_written_to_output * sizeof(record));
                 }
-                {
-                    auto page_offset = offset & ~(PAGESIZE - 1); // round down to multiple of a page
-                    auto page_count = (NUM_RECORDS_READ * sizeof(record)) & ~(PAGESIZE - 1); // round down to multiple of a page
-                    if (posix_fadvise(fd_in, page_offset, page_count, POSIX_FADV_DONTNEED))
-                        warn("Failed to discard bytes %lu to %lu of input", page_offset, page_offset + page_count);
-                }
-                offset += bytes_read;
-                count -= NUM_RECORDS_READ;
-
-                /* Partition all records from the read buffer into the write-back buffers. */
-                for (auto r = read_buffer, end = read_buffer + NUM_RECORDS_READ; r != end; ++r) {
-                    const unsigned bucket_id = r->key[0]; // get bucket id
-                    *heads[bucket_id]++ = *r; // append to write-back buffer
-                    /* If the write-back buffer is full, write it out and reset head. */
-                    if (heads[bucket_id] == &buffers[bucket_id][NUM_RECORDS_PER_BUFFER]) {
-                        heads[bucket_id] = buffers[bucket_id].data(); // reset head
-                        auto &dst_bucket = buckets[bucket_id]; // get the destination bucket
-                        const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
-                        auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                        A_memcpy(dst, heads[bucket_id], NUM_RECORDS_PER_BUFFER * sizeof(record));
-                    }
-                }
-            }
-            assert(count < NUM_RECORDS_READ);
-
-            /* Read remaining records at the end. */
-            if (count) {
-                const auto bytes_read = pread(fd_in, read_buffer, count * sizeof(record), offset);
-                if (bytes_read != int(count * sizeof(record))) {
-                    warn("Failed to read next records from file '%s' at offset %ld", argv[1], offset);
-                    return;
-                }
-                {
-                    auto page_offset = offset & ~(PAGESIZE - 1); // round down to multiple of a page
-                    auto page_count = (count * sizeof(record)) & ~(PAGESIZE - 1); // round down to multiple of a page
-                    if (posix_fadvise(fd_in, page_offset, page_count, POSIX_FADV_DONTNEED))
-                        warn("Failed to discard bytes %lu to %lu of input", page_offset, page_offset + page_count);
-                }
-
-                for (auto r = read_buffer, end = read_buffer + count; r != end; ++r) {
-                    const unsigned bucket_id = r->key[0];
-                    *heads[bucket_id]++ = *r;
-                    if (heads[bucket_id] == &buffers[bucket_id][NUM_RECORDS_PER_BUFFER]) {
-                        for (auto p = buffers[bucket_id].data(); p != heads[bucket_id]; ++p)
-                            assert(p->key[0] == bucket_id);
-                        heads[bucket_id] = buffers[bucket_id].data(); // reset head
-                        auto &dst_bucket = buckets[bucket_id];
-                        const auto count = dst_bucket.count.fetch_add(NUM_RECORDS_PER_BUFFER, std::memory_order_relaxed);
-                        auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                        A_memcpy(dst, heads[bucket_id], NUM_RECORDS_PER_BUFFER * sizeof(record));
-                    }
-                }
-            }
-
-            /* Write-back the records still in the buffer. */
-            for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-                buffer_t &buffer = buffers[bucket_id];
-                auto head = heads[bucket_id];
-                if (head != buffer.data()) {
-                    for (auto p = buffer.data(); p != head; ++p)
+                if (num_records_to_write > num_records_written_to_output) {
+                    /* Write the remaining records to the overflow bucket. */
+                    auto &overflow_bucket = overflow_buckets[bucket_id];
+                    const std::size_t num_records_left = num_records_to_write - num_records_written_to_output;
+                    const auto old_size_overflow = overflow_bucket.count.fetch_add(num_records_left);
+                    const auto dst = overflow_bucket.addr + old_size_overflow;
+                    memcpy(dst, the_bucket.data() + num_records_written_to_output, num_records_left * sizeof(record));
+#ifndef NDEBUG
+                    for (auto p = dst, end = dst + num_records_left; p != end; ++p)
                         assert(p->key[0] == bucket_id);
-                    auto &dst_bucket = buckets[bucket_id];
-                    auto num_records_in_buffer = head - buffer.data();
-                    const auto count = dst_bucket.count.fetch_add(num_records_in_buffer, std::memory_order_relaxed);
-                    auto dst = reinterpret_cast<record*>(dst_bucket.addr) + count;
-                    A_memcpy(dst, buffers[bucket_id].data(), num_records_in_buffer * sizeof(record));
+#endif
+                }
+            };
+
+            /* Read the records into the thread's read buffer, then partition them into the thread's local bucket
+             * buffer.  If a local bucket runs full, flush it. */
+            while (count) {
+                const std::size_t to_read = std::min(count, NUM_RECORDS_READ);
+                readall(fd_in, read_buffer, to_read * sizeof(record), offset * sizeof(record)); // fill read buffer
+                count -= to_read;
+                offset += to_read;
+
+                /* Partition records in the read buffer. */
+                for (auto p = read_buffer, end = read_buffer + to_read; p != end; ++p) {
+                    const std::size_t bucket_id = p->key[0];
+                    auto &bucket = local_buckets[bucket_id];
+                    auto &head = heads[bucket_id];
+                    assert(head >= bucket.begin());
+                    assert(head < bucket.end());
+                    *head++ = *p; // append record to thread local bucket
+
+                    /* Check whether the local bucket is full and needs to be flushed. */
+                    if (head == bucket.end()) {
+                        flush_bucket(bucket_id);
+                        head = bucket.data(); // reset head
+                    }
                 }
             }
+
+            /* Flush the local buckets. */
+            for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id)
+                flush_bucket(bucket_id);
 
             delete[] read_buffer;
-            delete[] buffers;
+            delete[] local_buckets;
         };
 
 #ifdef SUBMISSION
@@ -362,7 +388,7 @@ int main(int argc, const char **argv)
             std::size_t offset = 0;
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid) {
                 const std::size_t count = tid == NUM_THREADS_PARTITION - 1 ? num_records - offset : count_per_thread;
-                threads[tid] = std::thread(partition, offset * sizeof(record), count);
+                threads[tid] = std::thread(partition, offset, count);
                 offset += count;
             }
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid)
@@ -373,78 +399,232 @@ int main(int argc, const char **argv)
 #endif
 
 #ifndef NDEBUG
-        /* Validate buckets. */
+        /* Validate output buckets. */
+        std::size_t num_records_in_output = 0, num_records_in_overflow = 0;
         for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            const auto &bucket = buckets[bucket_id];
-            auto records = reinterpret_cast<record*>(bucket.addr);
-            const std::size_t num_records = bucket.count.load();
-            for (std::size_t i = 0; i != num_records; ++i)
-                assert(records[i].key[0] == bucket_id);
+            const std::size_t bucket_offset = bucket_offset_output[bucket_id];
+            const std::size_t next_bucket_offset = bucket_id == NUM_BUCKETS - 1 ? num_records : bucket_offset_output[bucket_id + 1];
+            /* Get the computed bucket size.  This value can have overflown and needs to be clamped. */
+            std::size_t bucket_size = bucket_size_output[bucket_id].load();
+            /* The bucket cannot be larger than the allocated average. */
+            bucket_size = std::min(bucket_size, num_records_per_bucket_avg);
+            /* The bucket cannot reach into the next bucket. */
+            bucket_size = std::min(bucket_size, next_bucket_offset - bucket_offset);
+
+            num_records_in_output += bucket_size;
+            for (auto p = p_out + bucket_offset, end = p + bucket_size; p != end; ++p)
+                assert(p->key[0] == bucket_id);
+        }
+
+        /* Validate overflow buckets. */
+        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+            auto &bucket = overflow_buckets[bucket_id];
+            const std::size_t overflow_bucket_size = bucket.count.load();
+            assert(overflow_bucket_size <= num_records_per_bucket_avg);
+            num_records_in_overflow += overflow_bucket_size;
+            for (auto p = bucket.addr, end = p + overflow_bucket_size; p != end; ++p)
+                assert(p->key[0] == bucket_id);
+        }
+
+        std::cerr << "There are " << num_records_in_output << " records already in the output and "
+                  << num_records_in_overflow << " records in the overflow buckets." << std::endl;
+        assert(num_records_in_output + num_records_in_overflow == num_records);
+#endif
+
+        const auto t_begin_repair = ch::high_resolution_clock::now();
+
+        /* Repair the output by moving in the records from the overflow buckets. */
+        {
+            /** Points to the next record to process. */
+            record *src = p_out;
+            /** Points to the output destination of the next record. */
+            record *dst = src;
+            std::size_t bucket_id = 0;
+            for (; dst < p_end and bucket_id != NUM_BUCKETS - 1; ++bucket_id) {
+                assert(bucket_id < NUM_BUCKETS - 1);
+                assert(dst <= src);
+                auto &of_bkt = overflow_buckets[bucket_id];
+                const auto bucket_size = std::min(bucket_size_output[bucket_id].load(), num_records_per_bucket_avg);
+                if (bucket_size == 0) continue; // skip empty buckets
+
+                /* Remember where the bucket begins. */
+                bucket_offset_output[bucket_id] = dst - p_out;
+#ifndef NDEBUG
+                /* Compute offset according to histogram. */
+                {
+                    std::size_t off = 0;
+                    for (std::size_t i = 0; i != bucket_id; ++i)
+                        off += hist[i];
+                    if (off != std::size_t(dst - p_out))
+                        errx(EXIT_FAILURE, "According to the histogram, bucket %lu should start at offset %lu, but we "
+                                           "are at offset %lu now.", bucket_id, off, (dst - p_out));
+                }
+                std::cerr << "Bucket " << bucket_id << " starts at offset " << bucket_offset_output[bucket_id] << ".\n"
+                          << "  ` There are " << bucket_size << " records already in the output and "
+                          << of_bkt.count.load() << " records in the overflow bucket, making a total of "
+                          << (bucket_size + of_bkt.count.load()) << " records.\n";
+#endif
+
+                /* Fill the gap before the bucket with the records from the overflow bucket */
+                const std::size_t gap = src - dst;
+                const std::size_t to_copy = std::min(gap, of_bkt.count.load());
+#ifndef NDEBUG
+                std::cerr << "  ` Copy " << to_copy
+                          << " records from the overflow bucket into the gap before the bucket.\n";
+#endif
+                memcpy(dst, of_bkt.addr, to_copy * sizeof(record));
+#ifndef NDEBUG
+                for (auto p = dst, end = dst + to_copy; p != end; ++p)
+                    assert(p->key[0] == bucket_id);
+#endif
+                dst += to_copy;
+                assert(dst <= src);
+
+                if (dst < src) {
+                    /* If there is still a gap, we completely integrated the overflow into the output.  Move data from
+                     * the end of the bucket to fill the remaining gap. */
+                    const std::size_t still_gap = src - dst;
+                    const std::size_t to_move = std::min(still_gap, bucket_size);
+#ifndef NDEBUG
+                    std::cerr << "  ` There is still a gap.  Move the bucket left by " << to_move << " records.\n";
+#endif
+                    memcpy(dst, src + bucket_size - to_move, to_move * sizeof(record));
+#ifndef NDEBUG
+                    for (auto p = dst, end = dst + bucket_size; p != end; ++p)
+                        assert(p->key[0] == bucket_id);
+#endif
+                    dst += bucket_size; // to_move + (bucket_size - to_move)
+                    src = p_out + bucket_offset_output[bucket_id + 1];
+                    assert(dst < src and "we moved the current bucket at least by one record, dst must come before src");
+                } else {
+                    assert(dst == src);
+                    /* There is still data in the overflow bucket.  Make place for that data at the end of the output
+                     * bucket and move it. */
+#ifndef NDEBUG
+                    for (auto p = dst, end = dst + bucket_size; p != end; ++p)
+                        assert(p->key[0] == bucket_id);
+#endif
+                    dst += bucket_size;
+                    const std::size_t bucket_size_next = std::min(bucket_size_output[bucket_id + 1].load(), num_records_per_bucket_avg);
+                    src = p_out + bucket_offset_output[bucket_id + 1];
+                    assert(bucket_size_next == 0 or src->key[0] == bucket_id + 1);
+                    assert(dst <= src and "the next bucket cannot start within the current bucket");
+                    const std::size_t space_after = src - dst;
+                    const std::size_t remaining = of_bkt.count.load() - to_copy;
+#ifndef NDEBUG
+                    std::cerr << "  ` There are " << remaining << " records remaining in the overflow bucket.  Append them to the output bucket.\n";
+#endif
+                    if (space_after < remaining) {
+                        /* Append records to free from next bucket to its overflow bucket. */
+                        const std::size_t overflow = remaining - space_after;
+#ifndef NDEBUG
+                        std::cerr << "    ` There is not enough space after the output bucket.  Move " << overflow
+                                  << " records of the next output bucket to their overflow bucket.\n";
+#endif
+                        auto &of_bkt_next = overflow_buckets[bucket_id + 1];
+                        memcpy(of_bkt_next.addr + of_bkt_next.count, src, overflow * sizeof(record));
+                        src += overflow;
+                        of_bkt_next.count += overflow;
+                        bucket_size_output[bucket_id + 1] = bucket_size_next - overflow;
+                        bucket_offset_output[bucket_id + 1] = src - p_out;
+                    }
+#ifndef NDEBUG
+                    std::cerr << "  ` Copy the remaining " << remaining << " records from the overflow bufer at offset "
+                              << to_copy << " to the output bucket.\n";
+#endif
+                    memcpy(dst, of_bkt.addr + to_copy, remaining * sizeof(record));
+#ifndef NDEBUG
+                    for (auto p = dst, end = dst + remaining; p != end; ++p)
+                        assert(p->key[0] == bucket_id);
+#endif
+                    dst += remaining;
+                    assert(dst <= src and "we advanced src by making space for the overflow");
+                }
+            }
+
+            /* Handle the last bucket. */
+            if (dst < p_end)
+            {
+                assert(bucket_id < NUM_BUCKETS);
+                assert(dst <= src);
+                auto &of_bkt = overflow_buckets[bucket_id];
+                const auto bucket_size = std::min(bucket_size_output[bucket_id].load(), num_records_per_bucket_avg);
+
+                /* Remember where the bucket begins. */
+                bucket_offset_output[bucket_id] = dst - p_out;
+#ifndef NDEBUG
+                /* Compute offset according to histogram. */
+                {
+                    std::size_t off = 0;
+                    for (std::size_t i = 0; i != bucket_id; ++i)
+                        off += hist[i];
+                    if (off != std::size_t(dst - p_out))
+                        errx(EXIT_FAILURE, "According to the histogram, bucket %lu should start at offset %lu, but we "
+                                           "are at offset %lu now.", bucket_id, off, (dst - p_out));
+                }
+                std::cerr << "Bucket " << bucket_id << " starts at offset " << bucket_offset_output[bucket_id] << ".\n"
+                          << "  ` There are " << bucket_size << " records already in the output and "
+                          << of_bkt.count.load() << " records in the overflow bucket, making a total of "
+                          << (bucket_size + of_bkt.count.load()) << " records.\n";
+#endif
+
+                /* Fill the gap before the bucket with the records from the overflow bucket */
+                const std::size_t gap = src - dst;
+                const std::size_t to_copy = std::min(gap, of_bkt.count.load());
+#ifndef NDEBUG
+                std::cerr << "  ` Copy " << to_copy
+                          << " records from the overflow bucket into the gap before the bucket.\n";
+#endif
+                memcpy(dst, of_bkt.addr, to_copy * sizeof(record));
+#ifndef NDEBUG
+                for (auto p = dst, end = dst + to_copy; p != end; ++p)
+                    assert(p->key[0] == bucket_id);
+#endif
+                dst += to_copy;
+                assert(dst == src and "For the last bucket, we must entirely fill the gap");
+
+                /* There is still data in the overflow bucket.  Make place for that data at the end of the output
+                 * bucket and move it. */
+#ifndef NDEBUG
+                for (auto p = dst, end = dst + bucket_size; p != end; ++p)
+                    assert(p->key[0] == bucket_id);
+#endif
+                dst += bucket_size;
+                const std::size_t remaining = of_bkt.count.load() - to_copy;
+                memcpy(dst, of_bkt.addr + to_copy, remaining * sizeof(record));
+#ifndef NDEBUG
+                for (auto p = dst, end = dst + remaining; p != end; ++p)
+                    assert(p->key[0] == bucket_id);
+#endif
+                dst += remaining;
+            }
+            assert(dst == p_end);
+        }
+
+#ifndef NDEBUG
+        /* Validate the buckets in the output. */
+        {
+            record *p = p_out;
+            for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
+                const auto bucket_size = hist[bucket_id];
+                for (auto end = p + bucket_size; p != end; ++p)
+                    assert(p->key[0] == bucket_id);
+            }
         }
 #endif
 
         const auto t_begin_sort = ch::high_resolution_clock::now();
 
-        std::cerr << "Finish the buckets.\n";
-
-        /* How many pages of the output file are already in the page cache? */
-        {
-            const auto num_pages = (size_in_bytes + PAGESIZE - 1) / PAGESIZE;
-            unsigned char *vec = new unsigned char[num_pages]();
-            if (mincore(output, size_in_bytes, vec)) {
-                warn("Failed to get number of pages in cache");
-            } else {
-                unsigned num_pages_in_cache = 0;
-                for (auto p = vec, end = vec + num_pages; p != end; ++p)
-                    num_pages_in_cache += *p & 0b1;
-                std::cerr << "Currently there are " << num_pages_in_cache << " of " << num_pages
-                    << " pages of the output file in the page cache.\n";
-            }
-            delete[] vec;
-        }
-
-        /* Compute bucket offsets. */
-        for (std::size_t bucket_id = 0, sum = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            auto &bucket = buckets[bucket_id];
-            bucket.offset = sum;
-            sum += bucket.count;
-        }
-
-        ctpl::thread_pool pool(4, 64);
-        auto thread_memcpy = [&](int, std::size_t bucket_id) {
-            auto &bucket = buckets[bucket_id];
-            assert(bucket.count);
-            auto p_out = reinterpret_cast<record*>(output);
-            A_memcpy(p_out + bucket.offset, bucket.addr, bucket.count * sizeof(record));
-            free(bucket.addr);
-        };
-
-        /* Process the large buckets first. */
-        const std::size_t MT_THRESHOLD = num_records / NUM_LOGICAL_CORES_PER_SOCKET;
-        for (std::size_t bucket_id = 0; bucket_id != NUM_BUCKETS; ++bucket_id) {
-            auto &bucket = buckets[bucket_id];
-            if (bucket.count >= MT_THRESHOLD) {
-                std::cerr << "Bucket " << bucket_id << " requires MT sort.\n";
-                auto first = reinterpret_cast<record*>(bucket.addr);
-                auto last = first + bucket.count;
-                american_flag_sort_parallel(first, last, 1);
-                assert(std::is_sorted(first, last));
-                pool.push(thread_memcpy, bucket_id);
-            }
-        }
-
-        /* Sort the remaining buckets. */
+        /* Sort the buckets simultaneously with a worklist. */
         std::atomic_uint_fast32_t bucket_counter(0);
-        auto recurse = [&]() {
+        auto sort_bucket = [&]() {
             unsigned bucket_id;
             while ((bucket_id = bucket_counter.fetch_add(1)) < NUM_BUCKETS) {
-                const auto &bucket = buckets[bucket_id];
-                if (bucket.count > 1 and bucket.count < MT_THRESHOLD) {
-                    auto first = reinterpret_cast<record*>(bucket.addr);
-                    auto last = first + bucket.count;
+                const auto first = p_out + bucket_offset_output[bucket_id];
+                const auto last = bucket_id == NUM_BUCKETS - 1 ? p_end : p_out + bucket_offset_output[bucket_id + 1];
+                if (last > first) {
                     select_sort_algorithm(first, last, 1);
                     assert(std::is_sorted(first, last));
-                    pool.push(thread_memcpy, bucket_id);
                 }
             }
         };
@@ -460,9 +640,13 @@ int main(int argc, const char **argv)
         /* Write the sorted data to the output file. */
         std::cerr << "Write sorted data back to disk.\n";
 
-        pool.stop(/* isWait = */ true);
+        munlock(output, size_in_bytes);
+#ifndef NDEBUG
         msync(output, size_in_bytes, MS_ASYNC);
         munmap(output, size_in_bytes);
+        for (auto &b : overflow_buckets)
+            delete[] b.addr;
+#endif
 
         const auto t_finish = ch::high_resolution_clock::now();
 
@@ -470,7 +654,8 @@ int main(int argc, const char **argv)
         {
             constexpr unsigned long MiB = 1024 * 1024;
 
-            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_read).count() / 1e3;
+            const auto d_read_s = ch::duration_cast<ch::milliseconds>(t_begin_repair - t_begin_read).count() / 1e3;
+            const auto d_repair_s = ch::duration_cast<ch::milliseconds>(t_begin_sort - t_begin_repair).count() / 1e3;
             const auto d_sort_s = ch::duration_cast<ch::milliseconds>(t_begin_write - t_begin_sort).count() / 1e3;
             const auto d_write_s = ch::duration_cast<ch::milliseconds>(t_finish - t_begin_write).count() / 1e3;
 
@@ -479,6 +664,7 @@ int main(int argc, const char **argv)
             const auto throughput_write_mbs = size_in_bytes / MiB / d_write_s;
 
             std::cerr << "read: " << d_read_s << " s (" << throughput_read_mbs << " MiB/s)\n"
+                      << "repair: " << d_repair_s << " s\n"
                       << "sort: " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
                       << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
