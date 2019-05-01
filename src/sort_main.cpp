@@ -54,10 +54,6 @@
 #include <thread>
 #include <unistd.h>
 
-#ifdef WITH_PCM
-#include "cpucounters.h"
-#endif
-
 //#define WITH_IACA
 #ifdef WITH_IACA
 #include <iacaMarks.h>
@@ -172,10 +168,6 @@ int main(int argc, const char **argv)
         std::exit(EXIT_FAILURE);
     }
 
-#ifdef WITH_PCM
-    PCM &the_PCM = *PCM::getInstance(); // initialize singleton
-#endif
-
 #ifdef SUBMISSION
     /* Disable synchronization with C stdio. */
     std::ios::sync_with_stdio(false);
@@ -217,9 +209,12 @@ int main(int argc, const char **argv)
         err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
     std::cerr << "Memory map the output file at virtual address " << output << ".\n";
 
-    /* Choose the algorithm based on the file size. */
+    /*----- Choose the algorithm based on the file size. -------------------------------------------------------------*/
     if (size_in_bytes <= IN_MEMORY_BUFFER_SIZE)
     {
+        /*----- IN-MEMORY SORTING ------------------------------------------------------------------------------------*/
+        std::cerr << "===== In-Memory Sorting =====\n";
+
 #ifndef NDEBUG
         auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
         read_concurrent(fd_in, buf, size_in_bytes, 0);
@@ -227,8 +222,6 @@ int main(int argc, const char **argv)
         std::cerr << hist << std::endl;
         free(buf);
 #endif
-
-        std::cerr << "In-Memory Sorting\n";
 
         record *const p_out = reinterpret_cast<record*>(output);
         record *const p_end = p_out + num_records;
@@ -671,7 +664,8 @@ int main(int argc, const char **argv)
     }
     else
     {
-        std::cerr << "External Sorting\n";
+        /*----- EXTERNAL SORTING -------------------------------------------------------------------------------------*/
+        std::cerr << "===== External Sorting =====\n";
 
         /* Idea:
          * Read the first 30+x GB of data, partition on the fly and write to buckets on disk, where each bucket is a
@@ -695,7 +689,8 @@ int main(int argc, const char **argv)
         const auto t_begin_read = ch::high_resolution_clock::now();
 
         /* Concurrently read the first part of the file. */
-        std::cerr << "Read the first " << num_records_to_sort << " records (" << num_bytes_to_sort << " bytes).\n";
+        std::cerr << "Read the first " << num_records_to_sort << " records ("
+                  << double(num_bytes_to_sort) / (1024 * 1024) << " MiB).\n";
         void *in_memory_buffer = mmap(nullptr, num_bytes_to_sort, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
                                       /* fd= */ -1, 0);
         if (in_memory_buffer == MAP_FAILED)
@@ -709,7 +704,9 @@ int main(int argc, const char **argv)
         ch::high_resolution_clock::time_point t_begin_sort, t_end_sort;
 
         /* Sort the records in-memory. */
-        std::cerr << "Sort " << num_records_to_sort << " records in-memory in a separate thread.\n";
+        std::cerr << "Sort " << num_records_to_sort << " records ("
+                  << double(num_bytes_to_sort) / (1024 * 1024)
+                  << " MiB) in-memory in a separate thread.\n";
         histogram_t<unsigned, NUM_BUCKETS> in_memory_histogram;
         std::array<record*, NUM_BUCKETS> in_memory_buckets;
         std::thread thread_sort = std::thread([&]() {
@@ -760,7 +757,8 @@ int main(int argc, const char **argv)
         /* Read second part and partition. */
         if (num_records_to_partition) {
             std::cerr << "Read and partition the remaining " << num_records_to_partition << " records ("
-                      << num_bytes_to_partition << " bytes), starting at offset " << num_bytes_to_sort << ".\n";
+                      << double(num_bytes_to_partition) / (1024 * 1024) << " MiB), starting at offset "
+                      << num_bytes_to_sort << ".\n";
 
             /* Partition concurrently by evenly dividing the input between multiple partitioning threads.  Every thread
              * owns a buffer of N records for each bucket.  Read the input and append each record to the buffer of its
@@ -839,27 +837,8 @@ int main(int argc, const char **argv)
             };
 
 #ifdef SUBMISSION
-            /* Explicitly bind the partitioning to logical cores on NUMA region 1, where it can operate independently of
-             * sorting. */
-            {
-                cpu_set_t *cpus = CPU_ALLOC(40);
-                if (not cpus)
-                    err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
-                const auto size = CPU_ALLOC_SIZE(40);
-                CPU_ZERO_S(size, cpus);
-                for (int cpu = 10; cpu != 20; ++cpu)
-                    CPU_SET_S(cpu, size, cpus);
-                for (int cpu = 30; cpu != 40; ++cpu)
-                    CPU_SET_S(cpu, size, cpus);
-                assert(CPU_COUNT_S(size, cpus) == 20 and "allocated incorrect number of logical CPUs");
-
-                /* Bind process and all children to the desired logical CPUs. */
-                sched_setaffinity(0 /* this thread */, size, cpus);
-
-                CPU_FREE(cpus);
-            }
+            bind_to_cpus(SOCKET1_CPUS);
 #endif
-
             std::array<std::thread, NUM_THREADS_PARTITION> threads;
             const std::size_t count_per_thread = num_records_to_partition / NUM_THREADS_PARTITION;
             std::size_t offset = num_records_to_sort;
@@ -870,24 +849,8 @@ int main(int argc, const char **argv)
             }
             for (unsigned tid = 0; tid != NUM_THREADS_PARTITION; ++tid)
                 threads[tid].join();
-
 #ifdef SUBMISSION
-            /* Set back to *all* logical cores again. */
-            {
-                cpu_set_t *cpus = CPU_ALLOC(40);
-                if (not cpus)
-                    err(EXIT_FAILURE, "Failed to allocate CPU_SET of 40 CPUs");
-                const auto size = CPU_ALLOC_SIZE(40);
-                CPU_ZERO_S(size, cpus);
-                for (int cpu = 0; cpu != 40; ++cpu)
-                    CPU_SET_S(cpu, size, cpus);
-                assert(CPU_COUNT_S(size, cpus) == 40 and "allocated incorrect number of logical CPUs");
-
-                /* Bind process and all children to the desired logical CPUs. */
-                sched_setaffinity(0 /* this thread */, size, cpus);
-
-                CPU_FREE(cpus);
-            }
+            bind_to_cpus(ALL_CPUS);
 #endif
         }
 
@@ -898,24 +861,8 @@ int main(int argc, const char **argv)
         /* For each partition, read it, sort it, merge with sorted records, and write out to output file. */
         std::cerr << "Merge the sorted records in memory with the buckets.\n";
 
-#ifdef WITH_PCM
-        auto pcm_err = the_PCM.program();
-        if (pcm_err != PCM::Success)
-            errx(EXIT_FAILURE, "Failed to program PCM");
-
-        struct AllCounterState
-        {
-            SystemCounterState system;
-            std::vector<SocketCounterState> sockets;
-            std::vector<CoreCounterState> cores;
-        } pcm_before, pcm_after;
-
-        the_PCM.getAllCounterStates(pcm_before.system, pcm_before.sockets, pcm_before.cores);
-#endif
-
         ch::high_resolution_clock::duration
             d_load_bucket_total(0),
-            d_wait_for_load_bucket_total(0),
             d_sort_total(0),
             d_waiting_for_sort_total(0),
             d_merge_total(0),
@@ -945,11 +892,10 @@ int main(int argc, const char **argv)
             return first.size < second.size;
         });
 
+        /* Process all buckets, in ascending order by their size.  Each bucket goes through the pipeline of three
+         * stages: read - sort - merge. */
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
-#ifndef NDEBUG
-            std::cerr << "i = " << i << "\n";
-#endif
-            /* Sort bucket. */
+            /* Start sorter of bucket i-1. */
             if (i >= 1 and i <= NUM_BUCKETS) {
                 auto &bucket = buckets[i - 1];
                 if (bucket.size) {
@@ -964,13 +910,13 @@ int main(int argc, const char **argv)
                 }
             }
 
-            /* Merge bucket. */
+            /* Merge bucket i-2. */
             if (i >= 2) {
                 auto &bucket = buckets[i - 2];
 
                 const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
                 const std::size_t num_records_in_memory = in_memory_histogram[bucket.id];
-                const std::size_t num_records_merge_total = num_records_in_bucket + num_records_in_memory;
+                const std::size_t num_records_merge = num_records_in_bucket + num_records_in_memory;
 
                 const auto p_sorted_begin = in_memory_buckets[bucket.id];
                 auto p_sorted = p_sorted_begin;
@@ -981,7 +927,7 @@ int main(int argc, const char **argv)
                              (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
                              running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
                 auto p_out = p_out_begin;
-                const auto p_out_end = p_out + num_records_merge_total;
+                const auto p_out_end = p_out + num_records_merge;
 
                 /* Wait for the sort to finish. */
                 if (bucket.size) {
@@ -992,7 +938,7 @@ int main(int argc, const char **argv)
                     d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
                 }
 
-                madvise(p_out_begin, num_records_merge_total * sizeof(record), MADV_SEQUENTIAL);
+                madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
 
                 const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
                 if (bucket.size) {
@@ -1034,19 +980,31 @@ int main(int argc, const char **argv)
                 assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
                 assert(p_out == p_out_end and "incorrect number of elements written to output");
                 assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
-
                 const auto t_merge_bucket_end = ch::high_resolution_clock::now();
                 d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
 
                 /* Release resources. */
                 std::thread([=, &bucket]() {
                     constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
+                    static std::atomic_size_t num_records_synced(0);
                     const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
                     const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
+
+                    const auto n_syncd = num_records_synced.fetch_add(num_records_merge);
+                    if (n_syncd < num_records_to_partition) {
+                        const uintptr_t msync_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to bage boundary
+                        const uintptr_t msync_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
+                        msync(reinterpret_cast<void*>(msync_begin), msync_end - msync_begin, MS_SYNC);
+                        if (n_syncd + num_records_merge >= num_records_to_partition) {
+                            std::cerr << "Synced " << (n_syncd + num_records_merge) << " records ("
+                                      << double((n_syncd + num_records_merge) * sizeof(record)) / (1024 * 1024)
+                                      << " MiB) to disk.\n";
+                        }
+                    }
 
                     if (dontneed_sorted_length)
                         munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
@@ -1063,53 +1021,29 @@ int main(int argc, const char **argv)
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
             }
 
-            /* Load bucket. */
+            /* Load bucket i. */
             if (i < NUM_BUCKETS) {
                 auto &bucket = buckets[i];
                 if (bucket.size) {
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
-                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
                     bucket.addr = malloc(bucket.size);
                     if (not bucket.addr)
                         err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
+                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
                     read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
                     const auto t_load_bucket_end = ch::high_resolution_clock::now();
                     d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                 }
             }
-
         }
-
-#ifdef WITH_PCM
-        the_PCM.getAllCounterStates(pcm_after.system, pcm_after.sockets, pcm_after.cores);
-#endif
 
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
+#ifndef NDEBUG
         if (munmap(in_memory_buffer, num_bytes_to_sort))
             err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
-
-#ifdef WITH_PCM
-        /* Evaluate PCM. */
-        const double avg_freq = getActiveAverageFrequency(pcm_before.system, pcm_after.system);
-        const double core_IPC = getCoreIPC(pcm_before.system, pcm_after.system);
-        const double total_exec_usage = getTotalExecUsage(pcm_before.system, pcm_after.system);
-        const double L3_hit_ratio = getL3CacheHitRatio(pcm_before.system, pcm_after.system);
-        const double cycles_lost_l3_misses = getCyclesLostDueL3CacheMisses(pcm_before.system, pcm_after.system);
-        const auto bytes_read = getBytesReadFromMC(pcm_before.system, pcm_after.system);
-        const auto bytes_written = getBytesWrittenToMC(pcm_before.system, pcm_after.system);
-
-        std::cerr << "Performance Counters for the Merge Phase:"
-                  << "\n  average core frequency: " << (avg_freq / 1e9) << " GHz"
-                  << "\n  average number of retired instructions per core cycle: " << core_IPC
-                  << "\n  average number of retired instructions per time intervall: " << total_exec_usage
-                  << "\n  L3 cache hit ratio: " << L3_hit_ratio * 100 << "%"
-                  << "\n  estimated core cycles lost due to L3 cache misses: " << cycles_lost_l3_misses * 100 << "%"
-                  << "\n  bytes read from DRAM memory controllers: " << double(bytes_read) / (1024 * 1024) << " MiB"
-                  << "\n  bytes written to DRAM memory controllers: " << double(bytes_written) / (1024 * 1024) << " MiB"
-                  << std::endl;
 #endif
 
         /* Report times and throughput. */
@@ -1134,7 +1068,6 @@ int main(int argc, const char **argv)
                       << "total:     " << d_total_s << " s\n";
 
             std::cerr << "d_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_load_bucket_total).count() / 1e3 << " s\n"
-                      << "d_wait_for_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_wait_for_load_bucket_total).count() / 1e3 << " s\n"
                       << "d_sort_total: " << ch::duration_cast<ch::milliseconds>(d_sort_total).count() / 1e3 << " s\n"
                       << "d_waiting_for_sort_total: " << ch::duration_cast<ch::milliseconds>(d_waiting_for_sort_total).count() / 1e3 << " s\n"
                       << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n"
