@@ -1042,6 +1042,7 @@ int main(int argc, const char **argv)
                         munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
                     if (dontneed_out_length)
                         munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
+                    munlock(bucket.addr, bucket.size);
                     free(bucket.addr);
 
                     if (fclose(bucket.file))
@@ -1060,6 +1061,8 @@ int main(int argc, const char **argv)
                     /* Get the bucket data into memory. */
                     assert(bucket.addr == nullptr);
                     bucket.addr = malloc(bucket.size);
+                    /* Lock bucket pages on fault. */
+                    syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
                     if (not bucket.addr)
                         err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
                     const auto t_load_bucket_begin = ch::high_resolution_clock::now();
