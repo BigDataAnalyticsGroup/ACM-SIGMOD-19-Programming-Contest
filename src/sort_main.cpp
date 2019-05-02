@@ -932,17 +932,19 @@ int main(int argc, const char **argv)
             if (i < NUM_BUCKETS) {
                 auto &bucket = buckets[i];
                 if (bucket.size) {
-                    /* Get the bucket data into memory. */
-                    assert(bucket.addr == nullptr);
-                    bucket.addr = malloc(bucket.size);
-                    /* Lock bucket pages on fault. */
-                    syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
-                    if (not bucket.addr)
-                        err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
-                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
-                    io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
-                    const auto t_load_bucket_end = ch::high_resolution_clock::now();
-                    d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
+                    bucket.loader = std::thread([&bucket, &d_load_bucket_total]() {
+                        /* Get the bucket data into memory. */
+                        assert(bucket.addr == nullptr);
+                        bucket.addr = malloc(bucket.size);
+                        /* Lock bucket pages on fault. */
+                        syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
+                        if (not bucket.addr)
+                            err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
+                        const auto t_load_bucket_begin = ch::high_resolution_clock::now();
+                        io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
+                        const auto t_load_bucket_end = ch::high_resolution_clock::now();
+                        d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
+                    });
                 }
             }
 
@@ -953,6 +955,8 @@ int main(int argc, const char **argv)
                     bucket.sorter = std::thread([&bucket, &d_sort_total, &d_wait_for_load_bucket_total]() {
                         /* Wait for the bucket to be loaded. */
                         const auto t_wait_for_bucket_load_begin = ch::high_resolution_clock::now();
+                        assert(bucket.loader.joinable());
+                        bucket.loader.join();
                         const auto t_wait_for_bucket_load_end = ch::high_resolution_clock::now();
                         d_wait_for_load_bucket_total += t_wait_for_bucket_load_end - t_wait_for_bucket_load_begin;
 
