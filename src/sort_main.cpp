@@ -738,8 +738,6 @@ int main(int argc, const char **argv)
             void *buffer; ///< the buffer assigned to the stream object
             std::size_t size; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the memory region of the loaded bucket
-            std::shared_future<void> loader; ///< the thread that loads the bucket
-            std::shared_future<void> sorter; ///< the thread that sorts the bucket
         };
         std::array<bucket_t, NUM_BUCKETS> buckets;
         {
@@ -911,195 +909,205 @@ int main(int argc, const char **argv)
         if (setvbuf(file_out, out_buffer, _IOFBF, out_buffer_size))
             warn("Failed to set custom buffer for the output file stream");
 
-        /* Process all buckets, in ascending order by their size.  Each bucket goes through the pipeline of three
-         * stages: read - sort - merge. */
+        std::atomic_size_t bucket_to_load(0),
+                           bucket_to_sort(0),
+                           bucket_to_merge(0);
+
+        constexpr std::size_t PIPELINE_DEPTH = 3;
+
+        /* Thread to load buckets. */
+        std::thread loader = std::thread([&]() {
+            std::size_t idx;
+            while ((idx = bucket_to_load.load()) < NUM_BUCKETS) {
+                while (bucket_to_merge.load() + PIPELINE_DEPTH <= idx) // busy-wait for merge to complete
+                    std::this_thread::yield();
+
+                auto &bucket = buckets[idx];
+                if (bucket.size) {
+                    /* Get the bucket data into memory. */
+                    assert(bucket.addr == nullptr);
+                    bucket.addr = malloc(bucket.size);
+                    if (not bucket.addr)
+                        err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
+                    /* Lock bucket pages on fault. */
+                    syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
+                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
+                    io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
+                    const auto t_load_bucket_end = ch::high_resolution_clock::now();
+                    d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
+                }
+                std::ostringstream oss;
+                oss << "Loading bucket " << idx << " completed.\n";
+                std::cerr << oss.str();
+                bucket_to_load += 1;
+            }
+        });
+
+        /* Thread to sort buckets. */
+        std::thread sorter = std::thread([&]() {
+            std::size_t idx;
+            while ((idx = bucket_to_sort.load()) < NUM_BUCKETS) {
+                while (bucket_to_load.load() <= idx) // busy-wait for load to complete
+                    std::this_thread::yield();
+
+                auto &bucket = buckets[idx];
+                if (bucket.size) {
+                    assert(bucket.addr != nullptr);
+                    assert(bucket.size);
+                    record *records = reinterpret_cast<record*>(bucket.addr);
+                    const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
+
+                    const auto t_sort_bucket_begin = ch::high_resolution_clock::now();
+                    american_flag_sort_parallel(records, records + num_records_in_bucket, 1);
+                    assert(std::is_sorted(records, records + num_records_in_bucket));
+                    const auto t_sort_bucket_end = ch::high_resolution_clock::now();
+                    d_sort_total += t_sort_bucket_end - t_sort_bucket_begin;
+                }
+                std::ostringstream oss;
+                oss << "Sorting bucket " << idx << " completed.\n";
+                std::cerr << oss.str();
+                bucket_to_sort += 1;
+            }
+        });
+
+        /* Merge buckets. */
         std::size_t num_records_written_to_output = 0;
-        for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
-            /* Load bucket i. */
-            if (i < NUM_BUCKETS) {
-                auto &bucket = buckets[i];
-                if (bucket.size) {
-                    bucket.loader = std::async(std::launch::async, [&bucket, &d_load_bucket_total]() {
-                        /* Get the bucket data into memory. */
-                        assert(bucket.addr == nullptr);
-                        bucket.addr = malloc(bucket.size);
-                        /* Lock bucket pages on fault. */
-                        syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
-                        if (not bucket.addr)
-                            err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
-                        const auto t_load_bucket_begin = ch::high_resolution_clock::now();
-                        io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
-                        const auto t_load_bucket_end = ch::high_resolution_clock::now();
-                        d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
-                    });
-                }
+        for (std::size_t i = 0; i != NUM_BUCKETS; ++i, ++bucket_to_merge) {
+            /* Get index of next bucket. */
+            assert(bucket_to_merge.load() == i);
+
+            /* Wait for sort to finish. */
+            while (bucket_to_sort.load() <= i)
+                std::this_thread::yield();
+
+            std::ostringstream oss;
+            oss << "Merging bucket " << i << ".\n";
+            std::cerr << oss.str();
+
+            auto &bucket = buckets[i];
+
+            const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
+            const std::size_t num_records_in_memory = in_memory_histogram[bucket.id];
+            const std::size_t num_records_merge = num_records_in_bucket + num_records_in_memory;
+
+            const auto p_sorted_begin = in_memory_buckets[bucket.id];
+            auto p_sorted = p_sorted_begin;
+            const auto p_sorted_end = p_sorted + num_records_in_memory;
+            assert(std::is_sorted(p_sorted_begin, p_sorted_end));
+
+            const std::size_t bucket_offset_output = (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
+                                                     running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
+            const auto p_out_begin = p_out + bucket_offset_output;
+            auto p_out = p_out_begin;
+            const auto p_out_end = p_out + num_records_merge;
+
+            /* Select whether to use the file stream or the mmap region. */
+            const bool use_fstream = num_records_written_to_output < num_records_to_partition;
+            num_records_written_to_output += num_records_merge;
+
+            if (use_fstream) {
+                if (fseek(file_out, bucket_offset_output * sizeof(record), _IOFBF))
+                    err(EXIT_FAILURE, "Failed to seek to the next output bucket");
+            } else {
+                madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
+                readahead(fd_out, bucket_offset_output * sizeof(record), num_records_merge * sizeof(record));
             }
 
-            /* Start sorter of bucket i-1. */
-            if (i >= 1 and i <= NUM_BUCKETS) {
-                auto &bucket = buckets[i - 1];
-                if (bucket.size) {
-                    bucket.sorter = std::async(std::launch::async, [&bucket, &d_sort_total, &d_wait_for_load_bucket_total]() {
-                        /* Wait for the bucket to be loaded. */
-                        const auto t_wait_for_bucket_load_begin = ch::high_resolution_clock::now();
-                        bucket.loader.wait();
-                        const auto t_wait_for_bucket_load_end = ch::high_resolution_clock::now();
-                        d_wait_for_load_bucket_total += t_wait_for_bucket_load_end - t_wait_for_bucket_load_begin;
+            const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
+            if (bucket.size) {
+                const auto p_bucket_begin = reinterpret_cast<record*>(bucket.addr);
+                auto p_bucket = p_bucket_begin;
+                const auto p_bucket_end = p_bucket + num_records_in_bucket;
+                assert(std::is_sorted(p_bucket_begin, p_bucket_end));
 
-                        assert(bucket.addr != nullptr);
-                        assert(bucket.size);
-                        record *records = reinterpret_cast<record*>(bucket.addr);
-                        const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
+                /* If the in-memory data is not yet finished, merge. */
+                assert(p_sorted != p_sorted_end and p_bucket != p_bucket_end);
 
-                        const auto t_sort_bucket_begin = ch::high_resolution_clock::now();
-                        american_flag_sort_parallel(records, records + num_records_in_bucket, 1);
-                        const auto t_sort_bucket_end = ch::high_resolution_clock::now();
-                        d_sort_total += t_sort_bucket_end - t_sort_bucket_begin;
-                    });
+                /* Merge this bucket with the sorted data. */
+                while (p_bucket != p_bucket_end and p_sorted != p_sorted_end) {
+                    IACA_START;
+                    assert(p_bucket <= p_bucket_end);
+                    assert(p_sorted <= p_sorted_end);
+                    assert(p_out < reinterpret_cast<record*>(output) + num_records);
+
+                    const ptrdiff_t less = *p_bucket < *p_sorted;
+                    if (use_fstream)
+                        fwrite_unlocked(less ? p_bucket : p_sorted, sizeof(record), 1, file_out);
+                    else
+                        *p_out++ = less ? *p_bucket : *p_sorted;
+                    p_bucket += less;
+                    p_sorted += ptrdiff_t(1) - less;
                 }
-            }
+                IACA_END;
+                assert(use_fstream or std::is_sorted(p_out_begin, p_out) and "output not sorted");
+                assert(((p_bucket == p_bucket_end) or (p_sorted == p_sorted_end)) and
+                        "at least one of the two inputs must be finished");
 
-            /* Merge bucket i-2. */
-            if (i >= 2) {
-                auto &bucket = buckets[i - 2];
-
-                const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
-                const std::size_t num_records_in_memory = in_memory_histogram[bucket.id];
-                const std::size_t num_records_merge = num_records_in_bucket + num_records_in_memory;
-
-                const auto p_sorted_begin = in_memory_buckets[bucket.id];
-                auto p_sorted = p_sorted_begin;
-                const auto p_sorted_end = p_sorted + num_records_in_memory;
-                assert(std::is_sorted(p_sorted_begin, p_sorted_end));
-
-                const std::size_t bucket_offset_output = (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
-                                                         running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
-                const auto p_out_begin = p_out + bucket_offset_output;
-                auto p_out = p_out_begin;
-                const auto p_out_end = p_out + num_records_merge;
-
-                /* Select whether to use the file stream or the mmap region. */
-                const bool use_fstream = num_records_written_to_output < num_records_to_partition;
-                num_records_written_to_output += num_records_merge;
-
+                /* Finish the bucket, if unfinished. */
                 if (use_fstream) {
-                    if (fseek(file_out, bucket_offset_output * sizeof(record), _IOFBF))
-                        err(EXIT_FAILURE, "Failed to seek to the next output bucket");
+                    fwrite(p_bucket, sizeof(record), p_bucket_end - p_bucket, file_out);
+                    p_bucket = p_bucket_end;
                 } else {
-                    madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
-                    readahead(fd_out, bucket_offset_output * sizeof(record), num_records_merge * sizeof(record));
+                    while (p_bucket != p_bucket_end)
+                        *p_out++ = *p_bucket++;
                 }
-
-                /* Wait for the sort to finish. */
-                if (bucket.size) {
-                    const auto t_wait_for_sort_before = ch::high_resolution_clock::now();
-                    bucket.sorter.wait(); // wait for the sorter thread to finish sorting the bucket
-                    const auto t_wait_for_sort_after = ch::high_resolution_clock::now();
-                    d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
-                }
-
-                const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
-                if (bucket.size) {
-                    const auto p_bucket_begin = reinterpret_cast<record*>(bucket.addr);
-                    auto p_bucket = p_bucket_begin;
-                    const auto p_bucket_end = p_bucket + num_records_in_bucket;
-                    assert(std::is_sorted(p_bucket_begin, p_bucket_end));
-
-                    /* If the in-memory data is not yet finished, merge. */
-                    assert(p_sorted != p_sorted_end and p_bucket != p_bucket_end);
-
-                    /* Merge this bucket with the sorted data. */
-                    while (p_bucket != p_bucket_end and p_sorted != p_sorted_end) {
-                        IACA_START;
-                        assert(p_bucket <= p_bucket_end);
-                        assert(p_sorted <= p_sorted_end);
-                        assert(p_out < reinterpret_cast<record*>(output) + num_records);
-
-                        const ptrdiff_t less = *p_bucket < *p_sorted;
-                        if (use_fstream)
-                            fwrite_unlocked(less ? p_bucket : p_sorted, sizeof(record), 1, file_out);
-                        else
-                            *p_out = less ? *p_bucket : *p_sorted;
-                        ++p_out;
-                        p_bucket += less;
-                        p_sorted += ptrdiff_t(1) - less;
-                    }
-                    IACA_END;
-                    assert(use_fstream or std::is_sorted(p_out_begin, p_out) and "output not sorted");
-                    assert(((p_bucket == p_bucket_end) or (p_sorted == p_sorted_end)) and
-                            "at least one of the two inputs must be finished");
-
-                    /* Finish the bucket, if unfinished. */
-                    if (use_fstream) {
-                        fwrite(p_bucket, sizeof(record), p_bucket_end - p_bucket, file_out);
-                        p_bucket = p_bucket_end;
-                    } else {
-                        while (p_bucket != p_bucket_end)
-                            *p_out++ = *p_bucket++;
-                    }
-                    assert(p_bucket == p_bucket_end and "consumed incorrect number of records from bucket file");
-                }
-
-                /* Finish the sorted in-memory part, if unfinished. */
-                if (p_sorted != p_sorted_end) {
-                    if (use_fstream) {
-                        fwrite(p_sorted, sizeof(record), p_sorted_end - p_sorted, file_out);
-                        p_sorted = p_sorted_end;
-                    } else {
-                        while (p_sorted != p_sorted_end)
-                            *p_out++ = *p_sorted++;
-                    }
-                }
-                assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
-                assert(use_fstream or p_out == p_out_end and "incorrect number of elements written to output");
-                assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
-                const auto t_merge_bucket_end = ch::high_resolution_clock::now();
-                d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
-
-                /* Release resources. */
-                std::thread([=, &bucket]() {
-                    constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
-                    const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
-                    const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
-                    const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
-                    const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
-                    const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
-                    const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
-
-                    if (dontneed_sorted_length)
-                        munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
-                    if (dontneed_out_length)
-                        munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
-
-                    if (bucket.size) {
-                        munlock(bucket.addr, bucket.size);
-                        free(bucket.addr);
-                    }
-
-                    if (fclose(bucket.file))
-                        warn("Failed to close bucket file");
-                    free(bucket.buffer);
-                }).detach();
-
-                const auto t_resource_end = ch::high_resolution_clock::now();
-                d_unmap_total += t_resource_end - t_merge_bucket_end;
+                assert(p_bucket == p_bucket_end and "consumed incorrect number of records from bucket file");
             }
 
-            /* Check if the loader finished before the merger. */
-            if (i < NUM_BUCKETS) {
-                auto &bucket = buckets[i];
-                if (bucket.size) {
-                    const auto status = bucket.loader.wait_for(0ms);
-                    if (status == std::future_status::ready)
-                        std::cerr << "The loader of bucket " << bucket.id
-                                  << " already completed and the pipeline ran stale.\n";
+            /* Finish the sorted in-memory part, if unfinished. */
+            if (p_sorted != p_sorted_end) {
+                if (use_fstream) {
+                    fwrite(p_sorted, sizeof(record), p_sorted_end - p_sorted, file_out);
+                    p_sorted = p_sorted_end;
+                } else {
+                    while (p_sorted != p_sorted_end)
+                        *p_out++ = *p_sorted++;
                 }
             }
+            assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
+            assert(use_fstream or p_out == p_out_end and "incorrect number of elements written to output");
+            assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
+            const auto t_merge_bucket_end = ch::high_resolution_clock::now();
+            d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
+
+            /* Release resources. */
+            std::thread([=, &bucket]() {
+                constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
+                const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
+                const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
+                const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
+                const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
+                const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
+
+                if (dontneed_sorted_length)
+                    munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
+                if (dontneed_out_length)
+                    munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
+
+                if (bucket.size) {
+                    munlock(bucket.addr, bucket.size);
+                    free(bucket.addr);
+                }
+
+                if (fclose(bucket.file))
+                    warn("Failed to close bucket file");
+                free(bucket.buffer);
+            }).detach();
+
+            const auto t_resource_end = ch::high_resolution_clock::now();
+            d_unmap_total += t_resource_end - t_merge_bucket_end;
+
+            oss.str("");
+            oss << "Merging bucket " << i << " completed.\n";
+            std::cerr << oss.str();
         }
 
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
+        loader.join();
+        sorter.join();
         fflush_unlocked(file_out);
         free(out_buffer);
 #ifndef NDEBUG
