@@ -1031,7 +1031,6 @@ int main(int argc, const char **argv)
                 /* Release resources. */
                 std::thread([=, &bucket]() {
                     constexpr uintptr_t PAGEMASK = uintptr_t(PAGESIZE) - uintptr_t(1);
-                    static std::atomic_size_t num_records_synced(0);
                     const uintptr_t dontneed_sorted_begin = (reinterpret_cast<uintptr_t>(p_sorted_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_sorted_end = reinterpret_cast<uintptr_t>(p_sorted_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_sorted_length = dontneed_sorted_end - dontneed_sorted_begin;
