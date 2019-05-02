@@ -950,9 +950,11 @@ int main(int argc, const char **argv)
                     const auto t_load_bucket_end = ch::high_resolution_clock::now();
                     d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                 }
+#ifndef NDEBUG
                 std::ostringstream oss;
                 oss << "Loading bucket " << idx << " completed.\n";
                 std::cerr << oss.str();
+#endif
                 bucket_to_load += 1;
             }
         });
@@ -977,9 +979,11 @@ int main(int argc, const char **argv)
                     const auto t_sort_bucket_end = ch::high_resolution_clock::now();
                     d_sort_total += t_sort_bucket_end - t_sort_bucket_begin;
                 }
+#ifndef NDEBUG
                 std::ostringstream oss;
                 oss << "Sorting bucket " << idx << " completed.\n";
                 std::cerr << oss.str();
+#endif
                 bucket_to_sort += 1;
             }
         });
@@ -994,9 +998,11 @@ int main(int argc, const char **argv)
             while (bucket_to_sort.load() <= i)
                 std::this_thread::yield();
 
+#ifndef NDEBUG
             std::ostringstream oss;
             oss << "Merging bucket " << i << ".\n";
             std::cerr << oss.str();
+#endif
 
             auto &bucket = buckets[i];
 
