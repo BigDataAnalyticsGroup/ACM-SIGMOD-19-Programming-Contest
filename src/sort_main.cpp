@@ -51,6 +51,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/types.h>
 #include <thread>
 #include <unistd.h>
 
@@ -681,14 +682,6 @@ int main(int argc, const char **argv)
         /*----- EXTERNAL SORTING -------------------------------------------------------------------------------------*/
         std::cerr << "===== External Sorting =====\n";
 
-        /* Idea:
-         * Read the first 30+x GB of data, partition on the fly and write to buckets on disk, where each bucket is a
-         * separate file.
-         * Read the remaining 30-x GB of data into RAM, fully sort.  Read bucket by bucket from disk, sort, merge with
-         * in-memory data and write out to mmaped output file.  (Make sure to eagerly mark written pages for eviction.)
-         * Again, we should be able to save the write of the final 30GB because of mmap; the kernel will do this for us.
-         */
-
         const std::size_t num_records_to_sort = std::min(size_in_bytes, IN_MEMORY_BUFFER_SIZE) / sizeof(record);
         const std::size_t num_bytes_to_sort = num_records_to_sort * sizeof(record);
         const std::size_t num_records_to_partition = size_in_bytes <= IN_MEMORY_BUFFER_SIZE ? 0 :
@@ -906,8 +899,16 @@ int main(int argc, const char **argv)
             return first.size < second.size;
         });
 
+        /* Create output stream for the output file */
+        FILE *file_out = fdopen(fd_out, "w+");
+        const std::size_t out_buffer_size = 256 * stat_in.st_blksize;
+        char *out_buffer = reinterpret_cast<char*>(malloc(out_buffer_size));
+        if (setvbuf(file_out, out_buffer, _IOFBF, out_buffer_size))
+            warn("Failed to set custom buffer for the output file stream");
+
         /* Process all buckets, in ascending order by their size.  Each bucket goes through the pipeline of three
          * stages: read - sort - merge. */
+        std::size_t num_records_written_to_output = 0;
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
             /* Start sorter of bucket i-1. */
             if (i >= 1 and i <= NUM_BUCKETS) {
@@ -937,11 +938,29 @@ int main(int argc, const char **argv)
                 const auto p_sorted_end = p_sorted + num_records_in_memory;
                 assert(std::is_sorted(p_sorted_begin, p_sorted_end));
 
-                const auto p_out_begin = reinterpret_cast<record*>(output) +
-                             (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
-                             running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
+                const std::size_t bucket_offset_output = (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
+                                                         running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
+                const auto p_out_begin = p_out + bucket_offset_output;
                 auto p_out = p_out_begin;
                 const auto p_out_end = p_out + num_records_merge;
+                std::cerr << "Merge the in-memory data and the disk bucket for output bucket " << bucket.id
+                          << ".  The bucket starts at offset " << bucket_offset_output << " ("
+                          << double(bucket_offset_output * sizeof(record)) / (1024 * 1024) << " MiB) and contains "
+                          << num_records_merge << " records ("
+                          << double(num_records_merge * sizeof(record)) / (1024 * 1024) << " MiB).\n";
+
+                /* Select whether to use the file stream or the mmap region. */
+                const bool use_fstream = num_records_written_to_output < num_records_to_partition;
+                num_records_written_to_output += num_records_merge;
+
+                if (use_fstream) {
+                    std::cerr << "  ` Seek to the offset " << bucket_offset_output << ".\n";
+                    if (fseek(file_out, bucket_offset_output * sizeof(record), _IOFBF))
+                        err(EXIT_FAILURE, "Failed to seek to the next output bucket");
+                } else {
+                    madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
+                    readahead(fd_out, bucket_offset_output * sizeof(record), num_records_merge * sizeof(record));
+                }
 
                 /* Wait for the sort to finish. */
                 if (bucket.size) {
@@ -951,8 +970,6 @@ int main(int argc, const char **argv)
                     const auto t_wait_for_sort_after = ch::high_resolution_clock::now();
                     d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
                 }
-
-                madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
 
                 const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
                 if (bucket.size) {
@@ -972,27 +989,47 @@ int main(int argc, const char **argv)
                         assert(p_out < reinterpret_cast<record*>(output) + num_records);
 
                         const ptrdiff_t less = *p_bucket < *p_sorted;
-                        *p_out++ = less ? *p_bucket : *p_sorted;
+                        if (use_fstream)
+                            fwrite_unlocked(less ? p_bucket : p_sorted, sizeof(record), 1, file_out);
+                        else
+                            *p_out = less ? *p_bucket : *p_sorted;
+                        ++p_out;
                         p_bucket += less;
                         p_sorted += ptrdiff_t(1) - less;
                     }
                     IACA_END;
-                    assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
+                    assert(use_fstream or std::is_sorted(p_out_begin, p_out) and "output not sorted");
                     assert(((p_bucket == p_bucket_end) or (p_sorted == p_sorted_end)) and
                             "at least one of the two inputs must be finished");
 
-                    /* Finish the one unfinished input. */
-                    while (p_bucket != p_bucket_end)
-                        *p_out++ = *p_bucket++;
-                    while (p_sorted != p_sorted_end)
-                        *p_out++ = *p_sorted++;
+                    /* Finish the bucket, if unfinished. */
+                    if (use_fstream) {
+                        io_concurrent<IO::WRITE>(fd_out, p_bucket, (p_bucket_end - p_bucket) * sizeof(record),
+                                                 (p_out - reinterpret_cast<record*>(output)) * sizeof(record));
+                        p_bucket = p_bucket_end;
+                    } else {
+                        while (p_bucket != p_bucket_end)
+                            *p_out++ = *p_bucket++;
+                    }
                     assert(p_bucket == p_bucket_end and "consumed incorrect number of records from bucket file");
-                } else {
-                    while (p_sorted != p_sorted_end)
-                        *p_out++ = *p_sorted++;
                 }
+
+                /* Finish the sorted in-memory part, if unfinished. */
+                if (p_sorted != p_sorted_end) {
+                    if (use_fstream) {
+                        io_concurrent<IO::WRITE>(fd_out, p_sorted, (p_sorted_end - p_sorted) * sizeof(record),
+                                                 (p_out - reinterpret_cast<record*>(output)) * sizeof(record));
+                        p_sorted = p_sorted_end;
+                    } else {
+                        while (p_sorted != p_sorted_end)
+                            *p_out++ = *p_sorted++;
+                    }
+                }
+#ifndef NDEBUG
+                fflush_unlocked(file_out);
+#endif
                 assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
-                assert(p_out == p_out_end and "incorrect number of elements written to output");
+                assert(use_fstream or p_out == p_out_end and "incorrect number of elements written to output");
                 assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
                 const auto t_merge_bucket_end = ch::high_resolution_clock::now();
                 d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
@@ -1008,6 +1045,7 @@ int main(int argc, const char **argv)
                     const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
 
+#if 0
                     const auto n_syncd = num_records_synced.fetch_add(num_records_merge);
                     if (n_syncd < num_records_to_partition) {
                         const uintptr_t msync_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to bage boundary
@@ -1019,6 +1057,7 @@ int main(int argc, const char **argv)
                                       << " MiB) to disk.\n";
                         }
                     }
+#endif
 
                     if (dontneed_sorted_length)
                         munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
@@ -1055,6 +1094,8 @@ int main(int argc, const char **argv)
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
+        free(out_buffer);
+        fflush_unlocked(file_out);
 #ifndef NDEBUG
         if (munmap(in_memory_buffer, num_bytes_to_sort))
             err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
