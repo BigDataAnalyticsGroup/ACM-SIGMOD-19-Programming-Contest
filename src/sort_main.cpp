@@ -1050,9 +1050,6 @@ int main(int argc, const char **argv)
                             *p_out++ = *p_sorted++;
                     }
                 }
-#ifndef NDEBUG
-                fflush_unlocked(file_out);
-#endif
                 assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
                 assert(use_fstream or p_out == p_out_end and "incorrect number of elements written to output");
                 assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
