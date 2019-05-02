@@ -222,6 +222,8 @@ int main(int argc, const char **argv)
     if (output == MAP_FAILED)
         err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
     std::cerr << "Memory map the output file at virtual address " << output << ".\n";
+    record *const p_out = reinterpret_cast<record*>(output);
+    record *const p_end = p_out + num_records;
 
 #ifndef NDEBUG
     /* Show histogram of the input data. */
@@ -237,9 +239,6 @@ int main(int argc, const char **argv)
     {
         /*----- IN-MEMORY SORTING ------------------------------------------------------------------------------------*/
         std::cerr << "===== In-Memory Sorting =====\n";
-
-        record *const p_out = reinterpret_cast<record*>(output);
-        record *const p_end = p_out + num_records;
 
         /* Lock pages of the output file on fault.  This prevents unwanted page faults during the sort. */
         syscall(__NR_mlock2, output, size_in_bytes, /* MLOCK_ONFAULT */ 1U);
