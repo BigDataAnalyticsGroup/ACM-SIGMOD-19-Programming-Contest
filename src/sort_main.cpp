@@ -737,6 +737,7 @@ int main(int argc, const char **argv)
             void *buffer; ///< the buffer assigned to the stream object
             std::size_t size; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the memory region of the loaded bucket
+            std::thread loader; ///< the thread that loads the bucket
             std::thread sorter; ///< the thread that sorts the bucket
         };
         std::array<bucket_t, NUM_BUCKETS> buckets;
@@ -872,6 +873,7 @@ int main(int argc, const char **argv)
 
         ch::high_resolution_clock::duration
             d_load_bucket_total(0),
+            d_wait_for_load_bucket_total(0),
             d_sort_total(0),
             d_waiting_for_sort_total(0),
             d_merge_total(0),
@@ -912,13 +914,43 @@ int main(int argc, const char **argv)
          * stages: read - sort - merge. */
         std::size_t num_records_written_to_output = 0;
         for (std::size_t i = 0; i != NUM_BUCKETS + 2; ++i) {
+            /* Load bucket i. */
+            if (i < NUM_BUCKETS) {
+                auto &bucket = buckets[i];
+                if (bucket.size) {
+                    bucket.loader = std::thread([&bucket, &d_load_bucket_total]() {
+                        /* Get the bucket data into memory. */
+                        assert(bucket.addr == nullptr);
+                        bucket.addr = malloc(bucket.size);
+                        /* Lock bucket pages on fault. */
+                        syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
+                        if (not bucket.addr)
+                            err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
+                        const auto t_load_bucket_begin = ch::high_resolution_clock::now();
+                        io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
+                        const auto t_load_bucket_end = ch::high_resolution_clock::now();
+                        d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
+                    });
+                }
+            }
+
             /* Start sorter of bucket i-1. */
             if (i >= 1 and i <= NUM_BUCKETS) {
                 auto &bucket = buckets[i - 1];
                 if (bucket.size) {
-                    record *records = reinterpret_cast<record*>(bucket.addr);
-                    const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
-                    bucket.sorter = std::thread([records, num_records_in_bucket, &d_sort_total]() {
+                    bucket.sorter = std::thread([&bucket, &d_sort_total, &d_wait_for_load_bucket_total]() {
+                        /* Wait for the bucket to be loaded. */
+                        const auto t_wait_for_bucket_load_begin = ch::high_resolution_clock::now();
+                        assert(bucket.loader.joinable());
+                        bucket.loader.join();
+                        const auto t_wait_for_bucket_load_end = ch::high_resolution_clock::now();
+                        d_wait_for_load_bucket_total += t_wait_for_bucket_load_end - t_wait_for_bucket_load_begin;
+
+                        assert(bucket.addr != nullptr);
+                        assert(bucket.size);
+                        record *records = reinterpret_cast<record*>(bucket.addr);
+                        const std::size_t num_records_in_bucket = bucket.size / sizeof(record);
+
                         const auto t_sort_bucket_begin = ch::high_resolution_clock::now();
                         american_flag_sort_parallel(records, records + num_records_in_bucket, 1);
                         const auto t_sort_bucket_end = ch::high_resolution_clock::now();
@@ -1042,8 +1074,11 @@ int main(int argc, const char **argv)
                         munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
                     if (dontneed_out_length)
                         munmap(reinterpret_cast<void*>(dontneed_out_begin), dontneed_out_length);
-                    munlock(bucket.addr, bucket.size);
-                    free(bucket.addr);
+
+                    if (bucket.size) {
+                        munlock(bucket.addr, bucket.size);
+                        free(bucket.addr);
+                    }
 
                     if (fclose(bucket.file))
                         warn("Failed to close bucket file");
@@ -1052,24 +1087,6 @@ int main(int argc, const char **argv)
 
                 const auto t_resource_end = ch::high_resolution_clock::now();
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
-            }
-
-            /* Load bucket i. */
-            if (i < NUM_BUCKETS) {
-                auto &bucket = buckets[i];
-                if (bucket.size) {
-                    /* Get the bucket data into memory. */
-                    assert(bucket.addr == nullptr);
-                    bucket.addr = malloc(bucket.size);
-                    /* Lock bucket pages on fault. */
-                    syscall(__NR_mlock2, bucket.addr, bucket.size, /* MLOCK_ONFAULT */ 1U);
-                    if (not bucket.addr)
-                        err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
-                    const auto t_load_bucket_begin = ch::high_resolution_clock::now();
-                    io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
-                    const auto t_load_bucket_end = ch::high_resolution_clock::now();
-                    d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
-                }
             }
         }
 
@@ -1105,6 +1122,7 @@ int main(int argc, const char **argv)
                       << "total:     " << d_total_s << " s\n";
 
             std::cerr << "d_load_bucket_total: " << ch::duration_cast<ch::milliseconds>(d_load_bucket_total).count() / 1e3 << " s\n"
+                      << "d_wait_for_load_total: " << ch::duration_cast<ch::milliseconds>(d_wait_for_load_bucket_total).count() / 1e3 << " s\n"
                       << "d_sort_total: " << ch::duration_cast<ch::milliseconds>(d_sort_total).count() / 1e3 << " s\n"
                       << "d_waiting_for_sort_total: " << ch::duration_cast<ch::milliseconds>(d_waiting_for_sort_total).count() / 1e3 << " s\n"
                       << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n"
