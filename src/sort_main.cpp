@@ -1000,8 +1000,7 @@ int main(int argc, const char **argv)
 
                     /* Finish the bucket, if unfinished. */
                     if (use_fstream) {
-                        io_concurrent<IO::WRITE>(fd_out, p_bucket, (p_bucket_end - p_bucket) * sizeof(record),
-                                                 (p_out - reinterpret_cast<record*>(output)) * sizeof(record));
+                        fwrite(p_bucket, sizeof(record), p_bucket_end - p_bucket, file_out);
                         p_bucket = p_bucket_end;
                     } else {
                         while (p_bucket != p_bucket_end)
@@ -1013,8 +1012,7 @@ int main(int argc, const char **argv)
                 /* Finish the sorted in-memory part, if unfinished. */
                 if (p_sorted != p_sorted_end) {
                     if (use_fstream) {
-                        io_concurrent<IO::WRITE>(fd_out, p_sorted, (p_sorted_end - p_sorted) * sizeof(record),
-                                                 (p_out - reinterpret_cast<record*>(output)) * sizeof(record));
+                        fwrite(p_sorted, sizeof(record), p_sorted_end - p_sorted, file_out);
                         p_sorted = p_sorted_end;
                     } else {
                         while (p_sorted != p_sorted_end)
