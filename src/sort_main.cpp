@@ -223,19 +223,20 @@ int main(int argc, const char **argv)
         err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
     std::cerr << "Memory map the output file at virtual address " << output << ".\n";
 
+#ifndef NDEBUG
+    /* Show histogram of the input data. */
+    auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
+    io_concurrent<IO::READ>(fd_in, buf, size_in_bytes, 0);
+    auto hist = compute_histogram_parallel(buf, buf + num_records, 0, NUM_THREADS_READ);
+    std::cerr << hist << std::endl;
+    free(buf);
+#endif
+
     /*----- Choose the algorithm based on the file size. -------------------------------------------------------------*/
     if (size_in_bytes <= IN_MEMORY_BUFFER_SIZE)
     {
         /*----- IN-MEMORY SORTING ------------------------------------------------------------------------------------*/
         std::cerr << "===== In-Memory Sorting =====\n";
-
-#ifndef NDEBUG
-        auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
-        io_concurrent<IO::READ>(fd_in, buf, size_in_bytes, 0);
-        auto hist = compute_histogram_parallel(buf, buf + num_records, 0, NUM_THREADS_READ);
-        std::cerr << hist << std::endl;
-        free(buf);
-#endif
 
         record *const p_out = reinterpret_cast<record*>(output);
         record *const p_end = p_out + num_records;
