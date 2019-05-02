@@ -920,7 +920,7 @@ int main(int argc, const char **argv)
 
         /* Create output stream for the output file */
         FILE *file_out = fdopen(fd_out, "w+");
-        const std::size_t out_buffer_size = 256 * stat_in.st_blksize;
+        const std::size_t out_buffer_size = 1024 * stat_in.st_blksize;
         char *out_buffer = reinterpret_cast<char*>(malloc(out_buffer_size));
         if (setvbuf(file_out, out_buffer, _IOFBF, out_buffer_size))
             warn("Failed to set custom buffer for the output file stream");
