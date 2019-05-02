@@ -904,20 +904,6 @@ int main(int argc, const char **argv)
             return first.size < second.size;
         });
 
-        /* Sort into bitonic sequence. */
-        {
-            using std::swap;
-            std::array<bucket_t, NUM_BUCKETS> bitonic;
-            auto left = bitonic.begin(), right = bitonic.end();
-            for (std::size_t i = 0; i != NUM_BUCKETS; ++i) {
-                if (i & 0x1)
-                    swap(*--right, buckets[i]);
-                else
-                    swap(*left++, buckets[i]);
-            }
-            swap(bitonic, buckets);
-        }
-
         /* Create output stream for the output file */
         FILE *file_out = fdopen(fd_out, "w+");
         const std::size_t out_buffer_size = 1024 * stat_in.st_blksize;
