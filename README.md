@@ -1,6 +1,81 @@
 # ACM SIGMOD 2019
 
-## Programming Contest
+## Team "teamsic"
+
+**Author**<br>
+Immanuel Haffner <br>
+*<immanuel.haffner@bigdata.uni-saarland.de>*<br>
+<a href="http://bigdata.uni-saarland.de/people/haffner.php">bigdata.uni-saarland.de/people/haffner.php</a><br>
+Ph.D. Student<br>
+Big Data Analytics Group, Saarland Informatics Campus
+
+**Advisor:**<br>
+Prof. Dr. Jens Dittrich<br>
+*<jens.dittrich@bigdata.uni-saarland.de>*<br>
+<a href="http://bigdata.uni-saarland.de/people/dittrich.php">bigdata.uni-saarland.de/people/dittrich.php</a><br>
+Big Data Analytics Group, Saarland Informatics Campus
+
+
+## Description of the Solution
+
+1. Distinguish between data sets that fit entirely into main memory and those that require external sorting.
+2. Detect dynamically whether the data set is pure ASCII or contains non-ASCII characters.
+3. Open the output file with `open()` and map it into virtual address space via `mmap()`.
+
+### In-Memory Sorting
+
+1. Assume a uniform distribution of the keys in their respective domain (ASCII vs. non-ASCII).
+2. Partition records by their first byte (256 distinct values) into buckets.
+3. Predict the bucket sizes according to domain and distribution in the virtual address space of the mapped output file.
+4. Read and simultaneously partition records from the input file into the mapped output file.  Save potential overflow
+   in main memory.
+5. Fix overflow after partitioning.
+6. Finish the 256 buckets by concurrently sorting buckets with American Flag Sort, which falls back to `std::sort` if
+   the length of the sequence to sort is below a fixed threshold.
+7. Need not explicitly write data to disk, as the kernel will take care of the dirty mapped pages ;)
+
+### External Sorting
+
+1. Read the first 28 GiB into main meory.
+2. Start sorting the in-memory data in a separate thread.
+3. Read remaining data from input file and simultaneously partition it by write records to 256 bucket files on the
+   output disk.
+4. Wait for sorting and partitioning to complete.
+5. Build a priority queue of buckets, sorted by the bucket size in ascending order.
+6. Merge the buckets on disk with the in-memory data, bucket by bucket, according to the priority queue.  This happens
+   in a decoupled pipeline, where bucket i+2 is read while bucket i+1 is sorted while bucket i is merged and written to
+   the output file.
+7. For the remaining 28GiB of the file, don't explicitly write data to the file but instead write it the the mapped
+   memory.  Lock the pages in memory on fault.  This trades write performance (~477MiB/s) for read performance
+   (~515MiB/s).
+
+## Third-Party Libraries
+
+### C++ Thread Pool Library (CTPL)
+
+"Modern and efficient C++ Thread Pool Library" available on [Github](https://github.com/vit-vit/CTPL)
+
+**Licence:** Apache v2
+
+(Internally, one of the two implementations uses
+[boost's lock free queue](https://www.boost.org/doc/libs/1_66_0/doc/html/lockfree/reference.html#header.boost.lockfree.queue_hpp).)
+
+### Processor Counter Monitor (PCM)
+
+"Processor Counter Monitor (PCM) is an application programming interface (API) and a set of tools based on the API to
+monitor performance and energy metrics of Intel® Core™, Xeon®, Atom™ and Xeon Phi™ processors."
+
+Available on [Github](https://github.com/opcm/pcm)
+
+**Licence:** custom open source licence (see Github repository)
+
+### Agner Fog's Subroutine Library
+
+The `asmlib` subroutine library by [Agner Fog](https://www.agner.org/optimize/#asmlib).
+
+**Licence:** GNU GPL v3
+
+## Task Description
 
 ### Specification
 
