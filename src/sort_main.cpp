@@ -1093,8 +1093,8 @@ int main(int argc, const char **argv)
         const auto t_end = ch::high_resolution_clock::now();
 
         /* Release resources. */
-        free(out_buffer);
         fflush_unlocked(file_out);
+        free(out_buffer);
 #ifndef NDEBUG
         if (munmap(in_memory_buffer, num_bytes_to_sort))
             err(EXIT_FAILURE, "Failed to unmap the in-memory buffer");
