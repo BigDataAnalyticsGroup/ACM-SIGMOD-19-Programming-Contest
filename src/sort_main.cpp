@@ -1023,13 +1023,13 @@ int main(int argc, const char **argv)
 
             /* Select whether to use the file stream or the mmap region. */
             const bool use_fstream = num_records_written_to_output < num_records_to_partition;
-            num_records_written_to_output += num_records_merge;
+            //num_records_written_to_output += num_records_merge;
 
             if (use_fstream) {
                 if (fseek(file_out, bucket_offset_output * sizeof(record), _IOFBF))
                     err(EXIT_FAILURE, "Failed to seek to the next output bucket");
             } else {
-                madvise(p_out_begin, num_records_merge * sizeof(record), MADV_SEQUENTIAL);
+                madvise(p_out_begin, num_records_merge * sizeof(record), MADV_WILLNEED);
                 readahead(fd_out, bucket_offset_output * sizeof(record), num_records_merge * sizeof(record));
             }
 
@@ -1084,6 +1084,9 @@ int main(int argc, const char **argv)
                         *p_out++ = *p_sorted++;
                 }
             }
+            //sync_file_range(fd_out, bucket_offset_output * sizeof(record), num_records_merge * sizeof(record),
+                            //SYNC_FILE_RANGE_WAIT_BEFORE|SYNC_FILE_RANGE_WRITE);
+
             assert(p_sorted == p_sorted_end and "consumed incorrect number of records from in-memory");
             assert(use_fstream or p_out == p_out_end and "incorrect number of elements written to output");
             assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
@@ -1118,9 +1121,11 @@ int main(int argc, const char **argv)
             const auto t_resource_end = ch::high_resolution_clock::now();
             d_unmap_total += t_resource_end - t_merge_bucket_end;
 
+#ifndef NDEBUG
             oss.str("");
             oss << "Merging bucket " << i << " completed.\n";
             std::cerr << oss.str();
+#endif
         }
 
         const auto t_end = ch::high_resolution_clock::now();
