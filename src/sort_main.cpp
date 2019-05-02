@@ -111,8 +111,10 @@ enum class IO
 template<IO op>
 void io(int fd, void *buf, std::size_t count, off_t offset)
 {
-    if (posix_fadvise(fd, offset, count, POSIX_FADV_SEQUENTIAL))
-        warn("Failed to advise sequential file access");
+    if (op == IO::READ) {
+        if (posix_fadvise(fd, offset, count, POSIX_FADV_SEQUENTIAL))
+            warn("Failed to advise sequential file access");
+    }
     uint8_t *addr = reinterpret_cast<uint8_t*>(buf);
     while (count) {
         int num_bytes_io;
