@@ -100,17 +100,30 @@ struct thread_info
     std::size_t slab_size; ///< the size of a slab, the granule at which I/O is performed; a multiple of the preferred block size
 };
 
-void readall(int fd, void *buf, std::size_t count, off_t offset)
+enum class IO
+{
+    READ,
+    WRITE
+};
+
+/* Perform reliable I/O. */
+template<IO op>
+void io(int fd, void *buf, std::size_t count, off_t offset)
 {
     if (posix_fadvise(fd, offset, count, POSIX_FADV_SEQUENTIAL))
         warn("Failed to advise sequential file access");
-    uint8_t *dst = reinterpret_cast<uint8_t*>(buf);
+    uint8_t *addr = reinterpret_cast<uint8_t*>(buf);
     while (count) {
-        const int bytes_read = pread(fd, dst, count, offset);
-        if (bytes_read == -1)
-            err(EXIT_FAILURE, "Could not read from fd %d", fd);
+        int num_bytes_io;
+        if (op == IO::READ)
+            num_bytes_io = pread(fd, addr, count, offset);
+        else
+            num_bytes_io = pwrite(fd, addr, count, offset);
 
-        /* Discard read pages. */
+        if (num_bytes_io == -1)
+            err(EXIT_FAILURE, "Could not %s fd %d", op == IO::READ ? "read from" : "write to", fd);
+
+        /* Discard processed pages. */
         {
             auto page_offset = offset & ~(PAGESIZE - 1); // round down to multiple of a page
             auto page_count = count & ~(PAGESIZE - 1); // round down to multiple of a page
@@ -118,42 +131,43 @@ void readall(int fd, void *buf, std::size_t count, off_t offset)
                 warn("Failed to discard bytes %lu to %lu of input", page_offset, page_offset + page_count);
         }
 
-        count -= bytes_read;
-        offset += bytes_read;
-        dst += bytes_read;
+        count -= num_bytes_io;
+        offset += num_bytes_io;
+        addr += num_bytes_io;
     }
 }
 
-/** Read from fd count many bytes, starting at offset, and write them to buf. */
-void read_concurrent(int fd, void *buf, std::size_t count, off_t offset)
+/* Perform reliable I/O concurrently, where the workload is distributed evenly among multiple threads. */
+template<IO op>
+void io_concurrent(int fd, void *buf, std::size_t count, off_t offset)
 {
-    uint8_t *dst = reinterpret_cast<uint8_t*>(buf);
+    uint8_t *addr = reinterpret_cast<uint8_t*>(buf);
     struct stat st;
     if (fstat(fd, &st))
         err(EXIT_FAILURE, "Could not get status of fd %d", fd);
     const std::size_t slab_size = NUM_BLOCKS_PER_SLAB * st.st_blksize;
 
     if (count < 2 * slab_size) {
-        readall(fd, dst, count, offset);
+        io<op>(fd, addr, count, offset);
     } else {
-        /* Read unaligned start. */
+        /* Process unaligned start. */
         off_t unaligned = slab_size - (offset % slab_size);
         if (unaligned) {
-            readall(fd, dst, unaligned, offset);
+            io<op>(fd, addr, unaligned, offset);
             count -= unaligned;
-            dst += unaligned;
+            addr += unaligned;
             offset += unaligned;
         }
 
-        /* Concurrently read the rest. */
+        /* Concurrently process the rest. */
         std::array<std::thread, NUM_THREADS_READ> threads;
         const std::size_t num_slabs = std::ceil(double(count) / slab_size);
         const std::size_t num_slabs_per_thread = num_slabs / NUM_THREADS_READ;
         const std::size_t count_per_thread = num_slabs_per_thread * slab_size;
         for (unsigned tid = 0; tid != NUM_THREADS_READ; ++tid) {
             const std::size_t thread_count = tid == NUM_THREADS_READ - 1 ? count - (NUM_THREADS_READ - 1) * count_per_thread : count_per_thread;
-            threads[tid] = std::thread(readall, fd, dst, thread_count, offset);
-            dst += thread_count;
+            threads[tid] = std::thread(io<op>, fd, addr, thread_count, offset);
+            addr += thread_count;
             offset += thread_count;
         }
         for (auto &t : threads)
@@ -217,7 +231,7 @@ int main(int argc, const char **argv)
 
 #ifndef NDEBUG
         auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
-        read_concurrent(fd_in, buf, size_in_bytes, 0);
+        io_concurrent<IO::READ>(fd_in, buf, size_in_bytes, 0);
         auto hist = compute_histogram_parallel(buf, buf + num_records, 0, NUM_THREADS_READ);
         std::cerr << hist << std::endl;
         free(buf);
@@ -343,7 +357,7 @@ int main(int argc, const char **argv)
              * buffer.  If a local bucket runs full, flush it. */
             while (count) {
                 const std::size_t to_read = std::min(count, NUM_RECORDS_READ);
-                readall(fd_in, read_buffer, to_read * sizeof(record), offset * sizeof(record)); // fill read buffer
+                io<IO::READ>(fd_in, read_buffer, to_read * sizeof(record), offset * sizeof(record)); // fill read buffer
                 count -= to_read;
                 offset += to_read;
 
@@ -695,7 +709,7 @@ int main(int argc, const char **argv)
                                       /* fd= */ -1, 0);
         if (in_memory_buffer == MAP_FAILED)
             err(EXIT_FAILURE, "Failed to map temporary read buffer");
-        read_concurrent(fd_in, in_memory_buffer, num_bytes_to_sort, 0);
+        io_concurrent<IO::READ>(fd_in, in_memory_buffer, num_bytes_to_sort, 0);
 #ifndef NDEBUG
         std::cerr << "Allocated the in-memory buffer in range " << (void*)(in_memory_buffer) << " to "
                   << (void*)(reinterpret_cast<uint8_t*>(in_memory_buffer) + num_bytes_to_sort) << ".\n";
@@ -1031,7 +1045,7 @@ int main(int argc, const char **argv)
                     if (not bucket.addr)
                         err(EXIT_FAILURE, "Failed to allocate memory for bucket file");
                     const auto t_load_bucket_begin = ch::high_resolution_clock::now();
-                    read_concurrent(fileno(bucket.file), bucket.addr, bucket.size, 0);
+                    io_concurrent<IO::READ>(fileno(bucket.file), bucket.addr, bucket.size, 0);
                     const auto t_load_bucket_end = ch::high_resolution_clock::now();
                     d_load_bucket_total += t_load_bucket_end - t_load_bucket_begin;
                 }
