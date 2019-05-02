@@ -943,18 +943,12 @@ int main(int argc, const char **argv)
                 const auto p_out_begin = p_out + bucket_offset_output;
                 auto p_out = p_out_begin;
                 const auto p_out_end = p_out + num_records_merge;
-                std::cerr << "Merge the in-memory data and the disk bucket for output bucket " << bucket.id
-                          << ".  The bucket starts at offset " << bucket_offset_output << " ("
-                          << double(bucket_offset_output * sizeof(record)) / (1024 * 1024) << " MiB) and contains "
-                          << num_records_merge << " records ("
-                          << double(num_records_merge * sizeof(record)) / (1024 * 1024) << " MiB).\n";
 
                 /* Select whether to use the file stream or the mmap region. */
                 const bool use_fstream = num_records_written_to_output < num_records_to_partition;
                 num_records_written_to_output += num_records_merge;
 
                 if (use_fstream) {
-                    std::cerr << "  ` Seek to the offset " << bucket_offset_output << ".\n";
                     if (fseek(file_out, bucket_offset_output * sizeof(record), _IOFBF))
                         err(EXIT_FAILURE, "Failed to seek to the next output bucket");
                 } else {
@@ -1044,20 +1038,6 @@ int main(int argc, const char **argv)
                     const uintptr_t dontneed_out_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to page boundary
                     const uintptr_t dontneed_out_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
                     const ptrdiff_t dontneed_out_length = dontneed_out_end - dontneed_out_begin;
-
-#if 0
-                    const auto n_syncd = num_records_synced.fetch_add(num_records_merge);
-                    if (n_syncd < num_records_to_partition) {
-                        const uintptr_t msync_begin = (reinterpret_cast<uintptr_t>(p_out_begin) + PAGEMASK) & ~PAGEMASK; // round up to bage boundary
-                        const uintptr_t msync_end = reinterpret_cast<uintptr_t>(p_out_end) & ~PAGEMASK; // round down to page boundary
-                        msync(reinterpret_cast<void*>(msync_begin), msync_end - msync_begin, MS_SYNC);
-                        if (n_syncd + num_records_merge >= num_records_to_partition) {
-                            std::cerr << "Synced " << (n_syncd + num_records_merge) << " records ("
-                                      << double((n_syncd + num_records_merge) * sizeof(record)) / (1024 * 1024)
-                                      << " MiB) to disk.\n";
-                        }
-                    }
-#endif
 
                     if (dontneed_sorted_length)
                         munmap(reinterpret_cast<void*>(dontneed_sorted_begin), dontneed_sorted_length);
