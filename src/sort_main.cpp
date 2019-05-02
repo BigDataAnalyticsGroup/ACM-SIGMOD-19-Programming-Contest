@@ -45,6 +45,7 @@
 #include <err.h>
 #include <fcntl.h>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <sched.h>
 #include <sys/mman.h>
@@ -737,8 +738,8 @@ int main(int argc, const char **argv)
             void *buffer; ///< the buffer assigned to the stream object
             std::size_t size; ///< the size of the bucket in bytes
             void *addr = nullptr; ///< the address of the memory region of the loaded bucket
-            std::thread loader; ///< the thread that loads the bucket
-            std::thread sorter; ///< the thread that sorts the bucket
+            std::shared_future<void> loader; ///< the thread that loads the bucket
+            std::shared_future<void> sorter; ///< the thread that sorts the bucket
         };
         std::array<bucket_t, NUM_BUCKETS> buckets;
         {
@@ -932,7 +933,7 @@ int main(int argc, const char **argv)
             if (i < NUM_BUCKETS) {
                 auto &bucket = buckets[i];
                 if (bucket.size) {
-                    bucket.loader = std::thread([&bucket, &d_load_bucket_total]() {
+                    bucket.loader = std::async(std::launch::async, [&bucket, &d_load_bucket_total]() {
                         /* Get the bucket data into memory. */
                         assert(bucket.addr == nullptr);
                         bucket.addr = malloc(bucket.size);
@@ -952,11 +953,10 @@ int main(int argc, const char **argv)
             if (i >= 1 and i <= NUM_BUCKETS) {
                 auto &bucket = buckets[i - 1];
                 if (bucket.size) {
-                    bucket.sorter = std::thread([&bucket, &d_sort_total, &d_wait_for_load_bucket_total]() {
+                    bucket.sorter = std::async(std::launch::async, [&bucket, &d_sort_total, &d_wait_for_load_bucket_total]() {
                         /* Wait for the bucket to be loaded. */
                         const auto t_wait_for_bucket_load_begin = ch::high_resolution_clock::now();
-                        assert(bucket.loader.joinable());
-                        bucket.loader.join();
+                        bucket.loader.wait();
                         const auto t_wait_for_bucket_load_end = ch::high_resolution_clock::now();
                         d_wait_for_load_bucket_total += t_wait_for_bucket_load_end - t_wait_for_bucket_load_begin;
 
@@ -1007,8 +1007,7 @@ int main(int argc, const char **argv)
                 /* Wait for the sort to finish. */
                 if (bucket.size) {
                     const auto t_wait_for_sort_before = ch::high_resolution_clock::now();
-                    assert(bucket.sorter.joinable());
-                    bucket.sorter.join(); // wait for the sorter thread to finish sorting the bucket
+                    bucket.sorter.wait(); // wait for the sorter thread to finish sorting the bucket
                     const auto t_wait_for_sort_after = ch::high_resolution_clock::now();
                     d_waiting_for_sort_total += t_wait_for_sort_after - t_wait_for_sort_before;
                 }
@@ -1101,6 +1100,17 @@ int main(int argc, const char **argv)
 
                 const auto t_resource_end = ch::high_resolution_clock::now();
                 d_unmap_total += t_resource_end - t_merge_bucket_end;
+            }
+
+            /* Check if the loader finished before the merger. */
+            if (i < NUM_BUCKETS) {
+                auto &bucket = buckets[i];
+                if (bucket.size) {
+                    const auto status = bucket.loader.wait_for(0ms);
+                    if (status == std::future_status::ready)
+                        std::cerr << "The loader of bucket " << bucket.id
+                                  << " already completed and the pipeline ran stale.\n";
+                }
             }
         }
 
