@@ -203,46 +203,46 @@ int main(int argc, const char **argv)
     std::cerr << "Input file \"" << argv[1] << "\" is " << size_in_bytes << " bytes large, contains "
               << num_records << " records in blocks of size " << stat_in.st_blksize << " bytes.\n";
 
-    /* Open output file and allocate sufficient space. */
-    int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_RDWR, 0644);
-    if (fd_out == -1)
-        err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
-    if (fallocate(fd_out, /* mode = */ 0, /* offset= */ 0, /* len= */ size_in_bytes)) {
-        if (errno == EOPNOTSUPP) {
-            if (ftruncate(fd_out, size_in_bytes))
-                err(EXIT_FAILURE, "Could not truncate file '%s' to size %lu", argv[2], size_in_bytes);
-        } else {
-            err(EXIT_FAILURE, "Could not allocate space for output file '%s'", argv[2]);
-        }
-    }
-
-    /* MMap the output file. */
-    void *output = mmap(/* addr=   */ nullptr,
-                        /* length= */ size_in_bytes,
-                        /* prot=   */ PROT_READ|PROT_WRITE,
-                        /* flags=  */ MAP_SHARED,
-                        /* fd=     */ fd_out,
-                        /* offset= */ 0);
-    if (output == MAP_FAILED)
-        err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
-    std::cerr << "Memory map the output file at virtual address " << output << ".\n";
-    record *const p_out = reinterpret_cast<record*>(output);
-    record *const p_end = p_out + num_records;
-
-#ifndef NDEBUG
-    /* Show histogram of the input data. */
-    auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
-    io_concurrent<IO::READ>(fd_in, buf, size_in_bytes, 0);
-    auto hist = compute_histogram_parallel(buf, buf + num_records, 0, NUM_THREADS_READ);
-    std::cerr << hist << std::endl;
-    free(buf);
-#endif
-
     /*----- Choose the algorithm based on the file size. -------------------------------------------------------------*/
     if (size_in_bytes <= IN_MEMORY_BUFFER_SIZE)
     {
         /*----- IN-MEMORY SORTING ------------------------------------------------------------------------------------*/
         std::cerr << "===== In-Memory Sorting =====\n";
+
+        /* Open output file and allocate sufficient space. */
+        int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_RDWR, 0644);
+        if (fd_out == -1)
+            err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
+        if (fallocate(fd_out, /* mode = */ 0, /* offset= */ 0, /* len= */ size_in_bytes)) {
+            if (errno == EOPNOTSUPP) {
+                if (ftruncate(fd_out, size_in_bytes))
+                    err(EXIT_FAILURE, "Could not truncate file '%s' to size %lu", argv[2], size_in_bytes);
+            } else {
+                err(EXIT_FAILURE, "Could not allocate space for output file '%s'", argv[2]);
+            }
+        }
+
+        /* MMap the output file. */
+        void *output = mmap(/* addr=   */ nullptr,
+                            /* length= */ size_in_bytes,
+                            /* prot=   */ PROT_READ|PROT_WRITE,
+                            /* flags=  */ MAP_SHARED,
+                            /* fd=     */ fd_out,
+                            /* offset= */ 0);
+        if (output == MAP_FAILED)
+            err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
+        std::cerr << "Memory map the output file at virtual address " << output << ".\n";
+        record *const p_out = reinterpret_cast<record*>(output);
+        record *const p_end = p_out + num_records;
+
+#ifndef NDEBUG
+        /* Show histogram of the input data. */
+        auto buf = reinterpret_cast<record*>(malloc(size_in_bytes));
+        io_concurrent<IO::READ>(fd_in, buf, size_in_bytes, 0);
+        auto hist = compute_histogram_parallel(buf, buf + num_records, 0, NUM_THREADS_READ);
+        std::cerr << hist << std::endl;
+        free(buf);
+#endif
 
         /* Lock pages of the output file on fault.  This prevents unwanted page faults during the sort. */
         syscall(__NR_mlock2, output, size_in_bytes, /* MLOCK_ONFAULT */ 1U);
@@ -679,11 +679,19 @@ int main(int argc, const char **argv)
                       << "sort: " << d_sort_s << " s (" << throughput_sort_mbs << " MiB/s)\n"
                       << "write: " << d_write_s << " s (" << throughput_write_mbs << " MiB/s)\n";
         }
+
+        /* Release resources. */
+        close(fd_out);
     }
     else
     {
         /*----- EXTERNAL SORTING -------------------------------------------------------------------------------------*/
         std::cerr << "===== External Sorting =====\n";
+
+        /* Open output file in append mode. */
+        int fd_out = open(argv[2], O_CREAT|O_TRUNC|O_WRONLY, 0644);
+        if (fd_out == -1)
+            err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
 
         const std::size_t num_records_to_sort = std::min(size_in_bytes, IN_MEMORY_BUFFER_SIZE) / sizeof(record);
         const std::size_t num_bytes_to_sort = num_records_to_sort * sizeof(record);
@@ -917,7 +925,7 @@ int main(int argc, const char **argv)
         }
 
         /* Create output stream for the output file */
-        FILE *file_out = fdopen(fd_out, "w+");
+        FILE *file_out = fdopen(fd_out, "w");
         const std::size_t out_buffer_size = 1024 * stat_in.st_blksize;
         char *out_buffer = reinterpret_cast<char*>(malloc(out_buffer_size));
         if (setvbuf(file_out, out_buffer, _IOFBF, out_buffer_size))
@@ -990,6 +998,7 @@ int main(int argc, const char **argv)
 
         /* Merge buckets. */
         std::size_t num_records_written_to_output = 0;
+        void *output = nullptr;
         for (std::size_t i = 0; i != NUM_BUCKETS; ++i, ++bucket_to_merge) {
             /* Get index of next bucket. */
             assert(bucket_to_merge.load() == i);
@@ -1017,13 +1026,15 @@ int main(int argc, const char **argv)
 
             const std::size_t bucket_offset_output = (p_sorted - reinterpret_cast<record*>(in_memory_buffer)) + // offset of the in-memory bucket
                                                      running_sum[bucket.id] / sizeof(record); // offset of the on-disk bucket
-            const auto p_out_begin = p_out + bucket_offset_output;
-            auto p_out = p_out_begin;
-            const auto p_out_end = p_out + num_records_merge;
+
+
+            record *p_out_begin = nullptr;
+            record *p_out = nullptr;
+            record *p_out_end = nullptr;
 
             /* Select whether to use the file stream or the mmap region. */
             const bool use_fstream = num_records_written_to_output < num_records_to_partition;
-            //num_records_written_to_output += num_records_merge;
+            num_records_written_to_output += num_records_merge;
 
             if (use_fstream) {
                 if (fseek(file_out, bucket_offset_output * sizeof(record), _IOFBF))
@@ -1031,6 +1042,11 @@ int main(int argc, const char **argv)
             } else {
                 madvise(p_out_begin, num_records_merge * sizeof(record), MADV_WILLNEED);
                 readahead(fd_out, bucket_offset_output * sizeof(record), num_records_merge * sizeof(record));
+
+                assert(output);
+                p_out_begin = reinterpret_cast<record*>(output) + bucket_offset_output;
+                p_out = p_out_begin;
+                p_out_end = p_out + num_records_merge;
             }
 
             const auto t_merge_bucket_begin = ch::high_resolution_clock::now();
@@ -1092,6 +1108,39 @@ int main(int argc, const char **argv)
             assert(std::is_sorted(p_out_begin, p_out) and "output not sorted");
             const auto t_merge_bucket_end = ch::high_resolution_clock::now();
             d_merge_total += t_merge_bucket_end - t_merge_bucket_begin;
+
+
+                /* Switch to mmap */
+            if (use_fstream and num_records_written_to_output >= num_records_to_partition) {
+                fflush_unlocked(file_out);
+                fsync(fd_out);
+                close(fd_out);
+                /* Reopen file in RW append mode. */
+                int fd_out = open(argv[2], O_RDWR, 0644);
+                if (fd_out == -1)
+                    err(EXIT_FAILURE, "Could not open file '%s'", argv[2]);
+
+                /* Grow output file. */
+                if (fallocate(fd_out, /* mode = */ 0, /* offset= */ 0, /* len= */ size_in_bytes)) {
+                    if (errno == EOPNOTSUPP) {
+                        if (ftruncate(fd_out, size_in_bytes))
+                            err(EXIT_FAILURE, "Could not truncate file '%s' to size %lu", argv[2], size_in_bytes);
+                    } else {
+                        err(EXIT_FAILURE, "Could not allocate space for output file '%s'", argv[2]);
+                    }
+                }
+
+                /* MMap the output file. */
+                output = mmap(/* addr=   */ nullptr,
+                              /* length= */ size_in_bytes,
+                              /* prot=   */ PROT_READ|PROT_WRITE,
+                              /* flags=  */ MAP_SHARED,
+                              /* fd=     */ fd_out,
+                              /* offset= */ 0);
+                if (output == MAP_FAILED)
+                    err(EXIT_FAILURE, "Could not map output file '%s' into memory", argv[2]);
+
+            }
 
             /* Release resources. */
             std::thread([=, &bucket]() {
@@ -1168,11 +1217,13 @@ int main(int argc, const char **argv)
                       << "d_merge_total: " << ch::duration_cast<ch::milliseconds>(d_merge_total).count() / 1e3 << " s\n"
                       << "d_unmap_total: " << ch::duration_cast<ch::milliseconds>(d_unmap_total).count() / 1e3 << " s\n";
         }
+
+        /* Release resources. */
+        close(fd_out);
     }
 
     /* Release resources. */
     close(fd_in);
-    close(fd_out);
 
     std::exit(EXIT_SUCCESS);
 }
