@@ -16,6 +16,30 @@ Prof. Dr. Jens Dittrich<br>
 Big Data Analytics Group, Saarland Informatics Campus
 
 
+## Licence
+
+Apache License<br>
+Version 2.0, January 2004<br>
+[http://www.apache.org/licenses/](http://www.apache.org/licenses/)
+
+```plain
+Copyright 2019 Immanuel Haffner
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+For sake of completeness, the licence is also provided in the licence file `LICENCE.txt`.
+
 ## Description of the Solution
 
 1. Distinguish between data sets that fit entirely into main memory and those that require external sorting.
