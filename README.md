@@ -43,7 +43,8 @@ For sake of completeness, the licence is also provided in the licence file `LICE
 ## Poster
 
 The poster explaining our solution - which was presented at SIGMOD'19 poster session - can be found
-[here](https://github.com/BigDataAnalyticsGroup/ACM-SIGMOD-19-Programming_Contest-Poster).
+[here](https://github.com/BigDataAnalyticsGroup/ACM-SIGMOD-19-Programming_Contest-Poster).  For the sake of
+completeness, the poster repository is included here as a submodule in folder `poster/`.
 
 ## Description of the Solution
 

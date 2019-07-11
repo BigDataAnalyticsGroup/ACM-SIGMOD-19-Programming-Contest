@@ -4,3 +4,6 @@
 [submodule "CTPL"]
 	path = CTPL
 	url = git@github.com:vit-vit/CTPL.git
+[submodule "poster"]
+	path = poster
+	url = git@github.com:BigDataAnalyticsGroup/ACM-SIGMOD-19-Programming_Contest-Poster.git
