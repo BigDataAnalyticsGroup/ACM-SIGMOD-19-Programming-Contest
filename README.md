@@ -40,6 +40,11 @@ limitations under the License.
 
 For sake of completeness, the licence is also provided in the licence file `LICENCE.txt`.
 
+## Poster
+
+The poster explaining our solution - which was presented at SIGMOD'19 poster session - can be found
+[here](https://github.com/BigDataAnalyticsGroup/ACM-SIGMOD-19-Programming_Contest-Poster).
+
 ## Description of the Solution
 
 1. Distinguish between data sets that fit entirely into main memory and those that require external sorting.
